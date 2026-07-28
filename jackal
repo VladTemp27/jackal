@@ -55,6 +55,11 @@ def open_tty():
     """
     try:
         if os.name == "nt":
+            # A Windows process can still hold a console handle while being
+            # driven non-interactively, so CONIN$ opens and the read then
+            # blocks forever. Require an interactive stream as corroboration.
+            if not (sys.stdin.isatty() or sys.stdout.isatty()):
+                return None, None
             return open("CONIN$", "r"), open("CONOUT$", "w")
         # Two handles, not one "r+": buffered random access requires seek(),
         # which a terminal has no notion of, so "r+" raises

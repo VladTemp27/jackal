@@ -28,26 +28,71 @@ class JackalTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.home = self.tmp / "home"
-        (self.home / "bin").mkdir(parents=True)
-        stub = self.home / "bin" / "claude"
-        # Reports the token's LENGTH, never its value — so any literal token in
-        # captured output is a real leak, not the stub echoing it back.
-        stub.write_text(
-            "#!/bin/sh\n"
-            'echo "CLAUDE args=[$*] url=[$ANTHROPIC_BASE_URL]'
-            ' toklen=[${#ANTHROPIC_AUTH_TOKEN}]"\n'
-        )
-        stub.chmod(0o755)
+        bindir = self.home / "bin"
+        bindir.mkdir(parents=True)
+        self._write_stub(bindir)
         self.cfg = self.home / ".jackal.env"
+
+    @staticmethod
+    def _write_stub(bindir):
+        """A fake `claude` that echoes what it received.
+
+        Reports the token's LENGTH, never its value — so any literal token in
+        captured output is a real leak, not the stub echoing it back. Written
+        in Python rather than sh so the same stub works on Windows.
+        """
+        body = (
+            "import os, sys\n"
+            "print('CLAUDE args=[%s] url=[%s] toklen=[%d]' % (\n"
+            "    ' '.join(sys.argv[1:]),\n"
+            "    os.environ.get('ANTHROPIC_BASE_URL', ''),\n"
+            "    len(os.environ.get('ANTHROPIC_AUTH_TOKEN', '')),\n"
+            "))\n"
+        )
+        if os.name == "nt":
+            (bindir / "claude_stub.py").write_text(body)
+            # .cmd so PATHEXT resolution finds it; absolute interpreter path so
+            # it does not depend on python being on the stripped-down PATH.
+            (bindir / "claude.cmd").write_text(
+                f'@echo off\r\n"{sys.executable}" "%~dp0claude_stub.py" %*\r\n'
+            )
+        else:
+            stub = bindir / "claude"
+            stub.write_text(f"#!{sys.executable}\n{body}")
+            stub.chmod(0o755)
 
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     # -- helpers ----------------------------------------------------------
 
+    @staticmethod
+    def _system_path():
+        """Minimal PATH that is guaranteed not to contain a real `claude`."""
+        if os.name == "nt":
+            root = os.environ.get("SYSTEMROOT", r"C:\Windows")
+            return [os.path.join(root, "System32"), root]
+        return ["/usr/bin", "/bin"]
+
     def env(self, with_claude=True):
-        path = f"{self.home / 'bin'}:/usr/bin:/bin" if with_claude else "/usr/bin:/bin"
-        return {"HOME": str(self.home), "PATH": path, "TERM": "xterm-256color"}
+        dirs = self._system_path()
+        if with_claude:
+            dirs.insert(0, str(self.home / "bin"))
+        e = {
+            "HOME": str(self.home),
+            "PATH": os.pathsep.join(dirs),
+            "TERM": "xterm-256color",
+        }
+        if os.name == "nt":
+            # Path.home() reads USERPROFILE on Windows, not HOME. And Windows
+            # Python cannot even start without SYSTEMROOT — it needs the crypto
+            # API to seed hash randomisation. PATHEXT is what makes the .cmd
+            # stub resolvable by name.
+            e["USERPROFILE"] = str(self.home)
+            for k in ("SYSTEMROOT", "PATHEXT", "COMSPEC", "TEMP", "TMP"):
+                if k in os.environ:
+                    e[k] = os.environ[k]
+        return e
 
     def seed(self, url, token):
         self.cfg.write_text(f"ANTHROPIC_BASE_URL={url}\nANTHROPIC_AUTH_TOKEN={token}\n")
@@ -62,6 +107,7 @@ class JackalTest(unittest.TestCase):
             text=True,
             stdin=subprocess.DEVNULL,
             check=False,
+            timeout=60,  # a prompt that blocks should fail the suite, not stall CI
         )
 
     @staticmethod
