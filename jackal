@@ -46,6 +46,25 @@ def _enable_vt():
         return  # pre-Win10 console: ANSI simply won't render, nothing to do
 
 
+def _stdin_is_console():
+    """True only when stdin is a genuine Windows console handle.
+
+    isatty() is not sufficient: Windows classifies NUL as a character device,
+    so redirecting from NUL — which is what subprocess DEVNULL and `< NUL` do —
+    reports as a tty. CONIN$ then opens successfully and the read blocks
+    forever. GetConsoleMode succeeds only for a real console.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k = ctypes.windll.kernel32
+        mode = wintypes.DWORD()
+        return bool(k.GetConsoleMode(k.GetStdHandle(-10), ctypes.byref(mode)))
+    except (AttributeError, OSError):
+        return False
+
+
 def open_tty():
     """The controlling terminal as (reader, writer), or (None, None) if absent.
 
@@ -55,10 +74,7 @@ def open_tty():
     """
     try:
         if os.name == "nt":
-            # A Windows process can still hold a console handle while being
-            # driven non-interactively, so CONIN$ opens and the read then
-            # blocks forever. Require an interactive stream as corroboration.
-            if not (sys.stdin.isatty() or sys.stdout.isatty()):
+            if not _stdin_is_console():
                 return None, None
             return open("CONIN$", "r"), open("CONOUT$", "w")
         # Two handles, not one "r+": buffered random access requires seek(),
