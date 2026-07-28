@@ -19,5 +19,13 @@
     "cli",
     "wrapper"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VladTemp27/jackal.git"
+  },
+  "bugs": {
+    "url": "https://github.com/VladTemp27/jackal/issues"
+  },
+  "homepage": "https://github.com/VladTemp27/jackal#readme"
 }

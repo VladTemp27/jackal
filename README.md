@@ -36,16 +36,15 @@ npx jackal-cli            # try it, nothing installed permanently
 npm i -g jackal-cli       # install `jackal` on your PATH
 ```
 
-**From source** — the source repository is private; if you have access:
+**From source** — if you want to hack on it:
 
 ```sh
-git clone <this-repo> && cd jackal
-./install.sh
+git clone https://github.com/VladTemp27/jackal.git && cd jackal
+npm link
 ```
 
-`install.sh` symlinks `jackal` into `~/.local/bin` (override with
-`JACKAL_BIN=/somewhere ./install.sh`). A symlink rather than a copy, so editing
-the repo takes effect immediately.
+`npm link` symlinks `jackal` onto your PATH, so edits to the repo take effect
+immediately with no reinstall step.
 
 ## Use
 
@@ -61,9 +60,13 @@ Everything except `--setup` / `--reconfigure` is passed straight through to
 ## Uninstall
 
 ```sh
-./uninstall.sh          # removes the symlink, keeps your credentials
-./uninstall.sh --purge  # also deletes ~/.jackal.env
+npm un -g jackal-cli    # remove the command
+rm ~/.jackal.env        # remove the stored gateway URL and token
 ```
+
+`npm un` removes the binary but leaves `~/.jackal.env` behind — it holds a live
+credential, so delete it explicitly if you're done with the gateway. If you
+installed from source, `npm unlink -g jackal-cli` instead.
 
 ## How it works
 
