@@ -1,0 +1,4 @@
+# Never commit credentials. jackal keeps them in ~/.jackal.env (outside the
+# repo), but this guards against a stray copy landing here.
+*.env
+.jackal.env

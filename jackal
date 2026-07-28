@@ -1,0 +1,69 @@
+#!/bin/sh
+# jackal — launch Claude Code against a custom Anthropic gateway.
+# Config lives in ~/.jackal.env (0600). Re-run setup with: jackal --setup
+set -eu
+
+cfg="$HOME/.jackal.env"
+
+# --setup re-runs the intake over an existing config. Deliberately does NOT
+# delete it up front, so an aborted setup leaves the working config intact.
+setup=0
+case "${1:-}" in --setup|--reconfigure) setup=1; shift ;; esac
+
+if [ "$setup" = 1 ] || [ ! -r "$cfg" ]; then
+  # `test -r /dev/tty` is not enough: it stats the node and passes even with no
+  # controlling terminal. Only an actual open reports ENXIO.
+  ( : </dev/tty ) 2>/dev/null || { echo "jackal: need a terminal to configure $cfg" >&2; exit 1; }
+
+  # Honour NO_COLOR and dumb terminals; otherwise the box degrades to noise.
+  if [ -n "${NO_COLOR:-}" ] || [ "${TERM:-dumb}" = dumb ]; then
+    B='' D='' C='' G='' R='' Z=''
+  else
+    B=$(printf '\033[1m'); D=$(printf '\033[2m');  C=$(printf '\033[36m')
+    G=$(printf '\033[32m'); R=$(printf '\033[31m'); Z=$(printf '\033[0m')
+  fi
+
+  short="~${cfg#"$HOME"}"
+  die() { printf '\n  %s✗%s  %s\n\n' "$R" "$Z" "$1" >/dev/tty; exit 1; }
+
+  {
+    printf '\n  %s╭────────────────────────────────────────╮%s\n' "$C" "$Z"
+    printf   '  %s│%s  %sjackal%s  ·  Claude via custom gateway  %s│%s\n' "$C" "$Z" "$B" "$Z" "$C" "$Z"
+    printf   '  %s╰────────────────────────────────────────╯%s\n\n' "$C" "$Z"
+    printf   '  %swriting to%s %s\n\n' "$D" "$Z" "$short"
+    printf   '  %s▸%s %sAnthropic base URL%s\n' "$C" "$Z" "$B" "$Z"
+    printf   '    %s›%s ' "$D" "$Z"
+  } >/dev/tty
+  read -r url </dev/tty
+  case "$url" in
+    http://*|https://*) ;;
+    *) die "URL must start with http:// or https:// — nothing saved" ;;
+  esac
+
+  {
+    printf '\n  %s▸%s %sAuth token%s   %sinput hidden%s\n' "$C" "$Z" "$B" "$Z" "$D" "$Z"
+    printf   '    %s›%s ' "$D" "$Z"
+  } >/dev/tty
+  trap 'stty echo </dev/tty 2>/dev/null || true' EXIT INT TERM
+  stty -echo </dev/tty
+  read -r token </dev/tty
+  stty echo </dev/tty
+  trap - EXIT INT TERM
+
+  [ -n "$token" ] || die "token required — nothing saved"
+
+  # umask in a subshell so the file is 0600 from birth, never briefly readable.
+  ( umask 077
+    printf 'ANTHROPIC_BASE_URL=%s\nANTHROPIC_AUTH_TOKEN=%s\n' "$url" "$token" >"$cfg" )
+
+  printf '\n\n  %s✓%s  saved %s  %s(0600, %s chars)%s\n\n' \
+    "$G" "$Z" "$short" "$D" "${#token}" "$Z" >/dev/tty
+fi
+
+set -a; . "$cfg"; set +a
+
+# Prefer PATH (portable), fall back to the standard install path for spawns
+# that inherit a minimal PATH — Orca agents, cron, CI.
+claude_bin=$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")
+[ -x "$claude_bin" ] || { echo "jackal: claude not found at $claude_bin" >&2; exit 127; }
+exec "$claude_bin" "$@"
