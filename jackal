@@ -60,7 +60,11 @@ if [ "$setup" = 1 ] || [ ! -r "$cfg" ]; then
     "$G" "$Z" "$short" "$D" "${#token}" "$Z" >/dev/tty
 fi
 
-set -a; . "$cfg"; set +a
+set -a
+# Sourced path is user config, not resolvable at lint time.
+# shellcheck disable=SC1090
+. "$cfg"
+set +a
 
 # Banner. This file is only ever executed by `jackal`, so the normal `claude`
 # is untouched. Claude Code renders inline (no alt-screen, no clear) so anything
