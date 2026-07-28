@@ -2,3 +2,7 @@
 # repo), but this guards against a stray copy landing here.
 *.env
 .jackal.env
+
+# Python
+__pycache__/
+*.py[cod]
