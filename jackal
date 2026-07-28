@@ -78,5 +78,9 @@ fi
 # Prefer PATH (portable), fall back to the standard install path for spawns
 # that inherit a minimal PATH — Orca agents, cron, CI.
 claude_bin=$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")
-[ -x "$claude_bin" ] || { echo "jackal: claude not found at $claude_bin" >&2; exit 127; }
+[ -x "$claude_bin" ] || {
+  echo "jackal: Claude Code not found (looked for '$claude_bin')" >&2
+  echo "        install it with: npm i -g @anthropic-ai/claude-code" >&2
+  exit 127
+}
 exec "$claude_bin" "$@"

@@ -1,0 +1,31 @@
+{
+  "name": "jackal-cli",
+  "version": "0.1.0",
+  "description": "Launch Claude Code against a custom Anthropic gateway, without disturbing your normal claude",
+  "bin": {
+    "jackal": "jackal"
+  },
+  "files": [
+    "jackal",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "anthropic",
+    "gateway",
+    "proxy",
+    "cli",
+    "wrapper"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VladTemp27/jackal.git"
+  },
+  "bugs": {
+    "url": "https://github.com/VladTemp27/jackal/issues"
+  },
+  "homepage": "https://github.com/VladTemp27/jackal#readme"
+}

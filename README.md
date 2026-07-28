@@ -26,14 +26,26 @@ your regular account.
 
 ## Install
 
+Requires [Claude Code](https://claude.com/claude-code)
+(`npm i -g @anthropic-ai/claude-code`).
+
+**npm** — run without installing, or install globally:
+
+```sh
+npx jackal-cli            # try it, nothing installed permanently
+npm i -g jackal-cli       # install `jackal` on your PATH
+```
+
+**From source** — if you want to hack on it:
+
 ```sh
 git clone <this-repo> && cd jackal
 ./install.sh
 ```
 
-Symlinks `jackal` into `~/.local/bin`. Override the target with
-`JACKAL_BIN=/somewhere ./install.sh`. It's a symlink rather than a copy, so
-editing the repo takes effect immediately.
+`install.sh` symlinks `jackal` into `~/.local/bin` (override with
+`JACKAL_BIN=/somewhere ./install.sh`). A symlink rather than a copy, so editing
+the repo takes effect immediately.
 
 ## Use
 
