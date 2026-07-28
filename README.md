@@ -36,7 +36,7 @@ npx jackal-cli            # try it, nothing installed permanently
 npm i -g jackal-cli       # install `jackal` on your PATH
 ```
 
-**From source** — if you want to hack on it:
+**From source** — the source repository is private; if you have access:
 
 ```sh
 git clone <this-repo> && cd jackal
