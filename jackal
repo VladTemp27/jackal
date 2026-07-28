@@ -1,90 +1,183 @@
-#!/bin/sh
-# jackal — launch Claude Code against a custom Anthropic gateway.
-# Config lives in ~/.jackal.env (0600). Re-run setup with: jackal --setup
-set -eu
+#!/usr/bin/env python3
+"""jackal — launch Claude Code against a custom Anthropic gateway.
 
-cfg="$HOME/.jackal.env"
+Config lives in ~/.jackal.env (0600). Re-run setup with: jackal --setup
+"""
 
-# --setup re-runs the intake over an existing config. Deliberately does NOT
-# delete it up front, so an aborted setup leaves the working config intact.
-setup=0
-case "${1:-}" in --setup|--reconfigure) setup=1; shift ;; esac
+import getpass
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
 
-if [ "$setup" = 1 ] || [ ! -r "$cfg" ]; then
-  # `test -r /dev/tty` is not enough: it stats the node and passes even with no
-  # controlling terminal. Only an actual open reports ENXIO.
-  ( : </dev/tty ) 2>/dev/null || { echo "jackal: need a terminal to configure $cfg" >&2; exit 1; }
+CFG = Path.home() / ".jackal.env"
+CLAUDE_HINT = "install it with: npm i -g @anthropic-ai/claude-code"
 
-  # Honour NO_COLOR and dumb terminals; otherwise the box degrades to noise.
-  if [ -n "${NO_COLOR:-}" ] || [ "${TERM:-dumb}" = dumb ]; then
-    B='' D='' C='' G='' R='' Z=''
-  else
-    B=$(printf '\033[1m'); D=$(printf '\033[2m');  C=$(printf '\033[36m')
-    G=$(printf '\033[32m'); R=$(printf '\033[31m'); Z=$(printf '\033[0m')
-  fi
 
-  short="~${cfg#"$HOME"}"
-  die() { printf '\n  %s✗%s  %s\n\n' "$R" "$Z" "$1" >/dev/tty; exit 1; }
+# --------------------------------------------------------------------------
+# terminal
 
-  {
-    printf '\n  %s╭────────────────────────────────────────╮%s\n' "$C" "$Z"
-    printf   '  %s│%s  %sjackal%s  ·  Claude via custom gateway  %s│%s\n' "$C" "$Z" "$B" "$Z" "$C" "$Z"
-    printf   '  %s╰────────────────────────────────────────╯%s\n\n' "$C" "$Z"
-    printf   '  %swriting to%s %s\n\n' "$D" "$Z" "$short"
-    printf   '  %s▸%s %sAnthropic base URL%s\n' "$C" "$Z" "$B" "$Z"
-    printf   '    %s›%s ' "$D" "$Z"
-  } >/dev/tty
-  read -r url </dev/tty
-  case "$url" in
-    http://*|https://*) ;;
-    *) die "URL must start with http:// or https:// — nothing saved" ;;
-  esac
 
-  {
-    printf '\n  %s▸%s %sAuth token%s   %sinput hidden%s\n' "$C" "$Z" "$B" "$Z" "$D" "$Z"
-    printf   '    %s›%s ' "$D" "$Z"
-  } >/dev/tty
-  trap 'stty echo </dev/tty 2>/dev/null || true' EXIT INT TERM
-  stty -echo </dev/tty
-  read -r token </dev/tty
-  stty echo </dev/tty
-  trap - EXIT INT TERM
+def colors():
+    """ANSI codes, or empty strings when colour is unwanted or unsupported."""
+    if os.environ.get("NO_COLOR") or os.environ.get("TERM", "dumb") == "dumb":
+        return {k: "" for k in ("B", "D", "C", "G", "R", "Z")}
+    if os.name == "nt":
+        _enable_vt()
+    return {
+        "B": "\033[1m",
+        "D": "\033[2m",
+        "C": "\033[36m",
+        "G": "\033[32m",
+        "R": "\033[31m",
+        "Z": "\033[0m",
+    }
 
-  [ -n "$token" ] || die "token required — nothing saved"
 
-  # umask in a subshell so the file is 0600 from birth, never briefly readable.
-  ( umask 077
-    printf 'ANTHROPIC_BASE_URL=%s\nANTHROPIC_AUTH_TOKEN=%s\n' "$url" "$token" >"$cfg" )
+def _enable_vt():
+    """Turn on ANSI processing in the Windows console (Win10+); harmless if it fails."""
+    try:
+        import ctypes
 
-  printf '\n\n  %s✓%s  saved %s  %s(0600, %s chars)%s\n\n' \
-    "$G" "$Z" "$short" "$D" "${#token}" "$Z" >/dev/tty
-fi
+        k = ctypes.windll.kernel32
+        k.SetConsoleMode(k.GetStdHandle(-11), 7)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    except (AttributeError, OSError):
+        return  # pre-Win10 console: ANSI simply won't render, nothing to do
 
-set -a
-# Sourced path is user config, not resolvable at lint time.
-# shellcheck disable=SC1090
-. "$cfg"
-set +a
 
-# Banner. This file is only ever executed by `jackal`, so the normal `claude`
-# is untouched. Claude Code renders inline (no alt-screen, no clear) so anything
-# printed here survives above its welcome box.
-# Skipped when stdout is not a tty, to keep `jackal -p ... > file` clean.
-if [ -t 1 ]; then
-  host="${ANTHROPIC_BASE_URL#*://}"; host="${host%%/*}"
-  if [ -n "${NO_COLOR:-}" ] || [ "${TERM:-dumb}" = dumb ]; then
-    printf '\n  jackal · gateway %s\n\n' "$host"
-  else
-    printf '\n  \033[36m◆\033[0m \033[1mjackal\033[0m \033[2m· gateway\033[0m \033[36m%s\033[0m\n\n' "$host"
-  fi
-fi
+def open_tty():
+    """The controlling terminal as (reader, writer), or (None, None) if absent.
 
-# Prefer PATH (portable), fall back to the standard install path for spawns
-# that inherit a minimal PATH — Orca agents, cron, CI.
-claude_bin=$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")
-[ -x "$claude_bin" ] || {
-  echo "jackal: Claude Code not found (looked for '$claude_bin')" >&2
-  echo "        install it with: npm i -g @anthropic-ai/claude-code" >&2
-  exit 127
-}
-exec "$claude_bin" "$@"
+    Opening is the only reliable test. os.path.exists('/dev/tty') and
+    os.access() both succeed with no controlling terminal — only the open
+    raises ENXIO. Headless spawns (cron, CI, agent runners) land here.
+    """
+    try:
+        if os.name == "nt":
+            return open("CONIN$", "r"), open("CONOUT$", "w")
+        # Two handles, not one "r+": buffered random access requires seek(),
+        # which a terminal has no notion of, so "r+" raises
+        # io.UnsupportedOperation — an OSError subclass that looks exactly
+        # like "no terminal here" if you catch it broadly.
+        return open("/dev/tty", "r"), open("/dev/tty", "w")
+    except OSError:
+        return None, None
+
+
+# --------------------------------------------------------------------------
+# setup
+
+
+def run_setup(out, tty_in):
+    """Prompt for gateway URL and token, write them to CFG at 0600."""
+    c = colors()
+    short = str(CFG).replace(str(Path.home()), "~", 1)
+
+    def w(s):
+        out.write(s)
+        out.flush()
+
+    def die(msg):
+        w(f"\n  {c['R']}✗{c['Z']}  {msg}\n\n")
+        sys.exit(1)
+
+    w(f"\n  {c['C']}╭────────────────────────────────────────╮{c['Z']}\n")
+    w(
+        f"  {c['C']}│{c['Z']}  {c['B']}jackal{c['Z']}  ·  Claude via custom gateway  {c['C']}│{c['Z']}\n"
+    )
+    w(f"  {c['C']}╰────────────────────────────────────────╯{c['Z']}\n\n")
+    w(f"  {c['D']}writing to{c['Z']} {short}\n\n")
+
+    w(f"  {c['C']}▸{c['Z']} {c['B']}Anthropic base URL{c['Z']}\n    {c['D']}›{c['Z']} ")
+    url = (tty_in.readline() or "").strip()
+    if not url.startswith(("http://", "https://")):
+        die("URL must start with http:// or https:// — nothing saved")
+
+    w(
+        f"\n  {c['C']}▸{c['Z']} {c['B']}Auth token{c['Z']}   {c['D']}input hidden{c['Z']}\n"
+    )
+    # getpass reads from the terminal directly and restores echo even on
+    # KeyboardInterrupt; it is the portable equivalent of stty -echo.
+    token = getpass.getpass(f"    {c['D']}›{c['Z']} ", stream=out).strip()
+    if not token:
+        die("token required — nothing saved")
+
+    # O_CREAT with mode 0600 means the file is never briefly world-readable.
+    # chmod afterwards also covers overwriting a pre-existing file.
+    fd = os.open(CFG, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(f"ANTHROPIC_BASE_URL={url}\nANTHROPIC_AUTH_TOKEN={token}\n")
+    os.chmod(CFG, 0o600)
+
+    w(
+        f"\n\n  {c['G']}✓{c['Z']}  saved {short}  {c['D']}(0600, {len(token)} chars){c['Z']}\n\n"
+    )
+
+
+def load_config():
+    """Read KEY=VALUE lines from CFG into the environment."""
+    for line in CFG.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ[key.strip()] = value.strip()
+
+
+def banner():
+    """One line naming the gateway host. Never the token, never when piped."""
+    if not sys.stdout.isatty():
+        return
+    c = colors()
+    host = os.environ.get("ANTHROPIC_BASE_URL", "").split("://")[-1].split("/")[0]
+    if c["C"]:
+        print(
+            f"\n  {c['C']}◆{c['Z']} {c['B']}jackal{c['Z']} {c['D']}· gateway{c['Z']} {c['C']}{host}{c['Z']}\n"
+        )
+    else:
+        print(f"\n  jackal · gateway {host}\n")
+
+
+# --------------------------------------------------------------------------
+
+
+def main():
+    args = sys.argv[1:]
+    setup = bool(args) and args[0] in ("--setup", "--reconfigure")
+    if setup:
+        args = args[1:]
+
+    if setup or not CFG.is_file():
+        tty_in, tty_out = open_tty()
+        if tty_in is None:
+            sys.exit(f"jackal: need a terminal to configure {CFG}")
+        try:
+            run_setup(tty_out, tty_in)
+        finally:
+            tty_in.close()
+            if tty_out is not tty_in:
+                tty_out.close()
+
+    load_config()
+    banner()
+
+    claude = shutil.which("claude") or str(Path.home() / ".local/bin/claude")
+    if not os.access(claude, os.X_OK):
+        sys.exit(
+            f"jackal: Claude Code not found (looked for '{claude}')\n        {CLAUDE_HINT}"
+        )
+
+    if os.name == "nt":
+        # Windows has no execve. os.execv there spawns a detached process and
+        # exits immediately, so the shell returns before Claude finishes.
+        # Wait explicitly and propagate the exit code instead.
+        sys.exit(subprocess.run([claude, *args], check=False).returncode)
+    os.execv(claude, [claude, *args])  # replaces this process entirely
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(130)

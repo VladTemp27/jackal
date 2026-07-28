@@ -3,7 +3,7 @@
 Launch Claude Code against a custom Anthropic gateway, without disturbing your
 normal `claude`.
 
-`jackal` is a ~70-line POSIX shell wrapper. On first run it prompts for a base
+`jackal` is a single-file Python script with no dependencies. On first run it prompts for a base
 URL and auth token, stores them in `~/.jackal.env` at `0600`, and from then on
 execs `claude` with those in the environment. Your regular `claude` keeps using
 your regular account.
@@ -26,7 +26,7 @@ your regular account.
 
 ## Install
 
-Requires [Claude Code](https://claude.com/claude-code)
+Requires Python 3.9+ and [Claude Code](https://claude.com/claude-code)
 (`npm i -g @anthropic-ai/claude-code`).
 
 **npm** — run without installing, or install globally:
@@ -77,9 +77,10 @@ Two environment variables, set for one process only:
 | `ANTHROPIC_BASE_URL` | points Claude Code at your gateway |
 | `ANTHROPIC_AUTH_TOKEN` | bearer token sent to it |
 
-They're set inside the wrapper immediately before `exec`, so they apply to that
-`claude` process and nothing else. No `export` in your shell rc, no leakage into
-other tools.
+They're set immediately before `os.execv`, which **replaces** the jackal process
+rather than spawning a child — so `claude` inherits them directly, and no
+wrapper process lingers. They apply to that one process and nothing else: no
+`export` in your shell rc, no leakage into other tools.
 
 `CLAUDE_CONFIG_DIR` is deliberately **not** set, so `jackal` shares your normal
 `~/.claude` — same hooks, skills, agents, MCP servers, permissions, and
@@ -101,44 +102,63 @@ survives above its welcome box rather than being wiped. It shows the **host
 only**, never the token, and is skipped when stdout is not a tty so
 `jackal -p "..." > file` stays clean.
 
-This affects `jackal` alone. `claude` and `jackal` are independent symlinks to
-different files, and nothing in your shell rc or `~/.claude/settings.json`
-references jackal — running `claude` never executes this script.
+This affects `jackal` alone. `claude` and `jackal` are independent executables,
+and nothing in your shell rc or `~/.claude/settings.json` references jackal —
+running `claude` never executes this script.
+
+## Tests
+
+```sh
+python3 test.py
+```
+
+Stdlib `unittest` and `pty`, no dev dependencies. Every test runs against a
+throwaway `$HOME` with a stub `claude`, so it never touches your real config or
+reaches a gateway. The pty tests self-skip on Windows.
 
 ### Notes on design
 
-- Prompts read from `/dev/tty`, not stdin, so `jackal -p "..." < file` still works.
-- The terminal check is `( : </dev/tty )`, not `test -r /dev/tty` — the latter
-  stats the device node and returns true even with no controlling terminal.
-  Without a real open attempt, headless spawns (cron, CI, agent runners) would
-  hang or emit a raw `Device not configured`.
-- The token is read with `stty -echo` rather than `read -s`, which is a
-  bash/zsh extension that `dash` rejects.
-- The config file is written inside `( umask 077; ... )` so it is `0600` from
-  creation — `chmod` afterwards leaves a window where it is world-readable.
-- `--setup` does not delete the old config first, so an aborted reconfigure
-  leaves a working setup intact.
+- **`os.execv` on POSIX** replaces the process outright, so Claude inherits the
+  terminal, signals, and exit status directly — no wrapper left babysitting it.
+  Windows has no `execve` (`os.execv` there detaches and returns immediately,
+  so the shell prompt comes back mid-session), so that branch uses
+  `subprocess.run` and propagates the exit code.
+- **The terminal check is an actual `open()`.** `os.path.exists('/dev/tty')`
+  and `os.access()` both succeed with no controlling terminal; only opening it
+  raises `ENXIO`. Headless spawns — cron, CI, agent runners — depend on this
+  failing fast instead of blocking on input forever.
+- **Two tty handles, not one `"r+"`.** Buffered random access requires
+  `seek()`, which a terminal has no notion of, so `open('/dev/tty', 'r+')`
+  raises `io.UnsupportedOperation` — an `OSError` subclass that is
+  indistinguishable from "no terminal" if caught broadly.
+- **`getpass.getpass`** hides the token and restores echo even on
+  `KeyboardInterrupt`, and works on Windows where `stty -echo` does not.
+- **`os.open(..., 0o600)`** sets the mode at creation, so the credential file
+  is never briefly world-readable the way a later `chmod` would allow.
+- **`--setup` does not delete the old config first**, so an aborted reconfigure
+  leaves working credentials intact.
 
 ## Compatibility
 
+Requires Python 3.9+ (present by default on macOS and most Linux distributions).
+
 | Platform | Status |
 |---|---|
-| macOS | tested |
-| Linux | verified under `dash` (Debian/Ubuntu `/bin/sh`) |
-| BSD | POSIX-only constructs, untested |
-| Windows — WSL2 / Git Bash | works (both provide `/dev/tty` and `stty`) |
-| Windows — cmd / PowerShell | not supported |
+| Linux | tested in CI, Python 3.9 and 3.13 |
+| macOS | tested in CI, Python 3.9 and 3.13 |
+| Windows | tested in CI — native cmd/PowerShell, no WSL needed |
+| BSD | POSIX paths only, untested |
 
 Known limits: the box-drawing characters need a UTF-8 locale (`LANG=C` renders
-mojibake; `NO_COLOR=1` strips colour but not the box), and `~/.local/bin` must
-be on `PATH`.
+mojibake; `NO_COLOR=1` strips colour but not the box). On Windows, `0o600` maps
+onto the read-only attribute rather than real POSIX permissions, so the
+credential file is less protected there than on Unix.
 
 ## Why not Homebrew
 
-A tap from a **private** repo needs `HOMEBREW_GITHUB_API_TOKEN`, a separate
-`homebrew-jackal` repo, a release tarball, and a sha256 bump every version — for
-one shell script. `install.sh` is less machinery. If this ever goes public, a
-formula is about fifteen lines and worth adding then.
+A tap needs a separate `homebrew-jackal` repo, a release tarball, and a sha256
+bump every version — for one script that npm already distributes. If this gets
+enough traction to justify it, a formula is about fifteen lines.
 
 ## Security
 

@@ -17,7 +17,8 @@
     "gateway",
     "proxy",
     "cli",
-    "wrapper"
+    "wrapper",
+    "python"
   ],
   "license": "MIT",
   "repository": {
@@ -27,5 +28,8 @@
   "bugs": {
     "url": "https://github.com/VladTemp27/jackal/issues"
   },
-  "homepage": "https://github.com/VladTemp27/jackal#readme"
+  "homepage": "https://github.com/VladTemp27/jackal#readme",
+  "engines": {
+    "node": ">=14"
+  }
 }
