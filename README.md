@@ -73,6 +73,23 @@ other tools.
 gateway authenticates via the environment while the stored OAuth credential
 lives in the keychain. The two never collide.
 
+## Banner
+
+`jackal` prints a one-line banner naming the active gateway before handing off:
+
+```
+  ◆ jackal · gateway gw.example.com
+```
+
+Claude Code renders inline — no alt-screen, no clear-screen — so the banner
+survives above its welcome box rather than being wiped. It shows the **host
+only**, never the token, and is skipped when stdout is not a tty so
+`jackal -p "..." > file` stays clean.
+
+This affects `jackal` alone. `claude` and `jackal` are independent symlinks to
+different files, and nothing in your shell rc or `~/.claude/settings.json`
+references jackal — running `claude` never executes this script.
+
 ### Notes on design
 
 - Prompts read from `/dev/tty`, not stdin, so `jackal -p "..." < file` still works.
