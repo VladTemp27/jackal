@@ -232,6 +232,22 @@ def banner(name):
         print(f"\n  jackal · gateway {name} · {host}\n")
 
 
+def print_list():
+    names = list_gateways()
+    if not names:
+        print("  no gateways saved — run: jackal --setup")
+        return
+    current = read_current()
+    c = colors()
+    for name in names:
+        url = ""
+        for line in gateway_path(name).read_text().splitlines():
+            if line.startswith("ANTHROPIC_BASE_URL="):
+                url = line.partition("=")[2].strip()
+        mark = f"  {c['G']}(default){c['Z']}" if name == current else ""
+        print(f"  {c['C']}▸{c['Z']} {name}{mark}   {c['D']}{_host(url)}{c['Z']}")
+
+
 def launch(name, args):
     """Load a gateway's config, show the banner, and hand off to claude."""
     load_config(gateway_path(name))
@@ -289,6 +305,10 @@ def main():
         if not gateway_path(name).is_file():
             sys.exit(f"jackal: no gateway named '{name}' — see jackal --list")
         launch(name, args[2:])
+        return
+
+    if args and args[0] == "--list":
+        print_list()
         return
 
     names = list_gateways()

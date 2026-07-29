@@ -324,6 +324,25 @@ class JackalTest(unittest.TestCase):
         self.assertIn("url=[https://work.test]", r.stdout)  # the sole/default gateway, not overridden
         self.assertIn("args=[-p hi --gateway work]", r.stdout)
 
+    def test_list_shows_all_gateways_and_marks_default(self):
+        self.seed_named("work", "https://work.test", "tok_w")
+        self.seed_named("personal", "https://personal.test", "tok_p")
+        self.set_current("work")
+        r = self.run_piped("--list")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("work", r.stdout)
+        self.assertIn("personal", r.stdout)
+        self.assertIn("work.test", r.stdout)
+        self.assertIn("personal.test", r.stdout)
+        self.assertIn("default", r.stdout)
+        self.assertNotIn("tok_w", r.stdout)
+        self.assertNotIn("tok_p", r.stdout)
+
+    def test_list_when_empty(self):
+        r = self.run_piped("--list")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("no gateways saved", r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
