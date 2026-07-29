@@ -272,6 +272,33 @@ class JackalTest(unittest.TestCase):
         self.assertIn("work", r.stdout + r.stderr)
         self.assertIn("personal", r.stdout + r.stderr)
 
+    def test_use_sets_default(self):
+        self.seed_named("work", "https://work.test", "tok_w")
+        self.seed_named("personal", "https://personal.test", "tok_p")
+        self.set_current("work")
+        r = self.run_piped("use", "personal")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("personal", r.stdout)
+        self.assertEqual((self.home / ".jackal" / "current").read_text().strip(), "personal")
+
+    def test_use_then_bare_launches_chosen_gateway(self):
+        self.seed_named("work", "https://work.test", "tok_w")
+        self.seed_named("personal", "https://personal.test", "tok_p")
+        self.run_piped("use", "personal")
+        r = self.run_piped("-p", "hi")
+        self.assertIn("url=[https://personal.test]", r.stdout)
+
+    def test_use_unknown_gateway_errors(self):
+        self.seed_named("work", "https://work.test", "tok_w")
+        r = self.run_piped("use", "ghost")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no gateway named", r.stdout + r.stderr)
+        self.assertIn("--list", r.stdout + r.stderr)
+
+    def test_use_requires_name(self):
+        r = self.run_piped("use")
+        self.assertNotEqual(r.returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

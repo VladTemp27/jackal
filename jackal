@@ -272,6 +272,16 @@ def main():
         _prompt_setup(args[1:])
         return
 
+    if args and args[0] == "use":
+        if len(args) < 2:
+            sys.exit("jackal: use requires a gateway name, e.g. jackal use work")
+        name = args[1]
+        if not gateway_path(name).is_file():
+            sys.exit(f"jackal: no gateway named '{name}' — see jackal --list")
+        write_current(name)
+        print(f"  ✓  default gateway is now \"{name}\"")
+        return
+
     names = list_gateways()
     if not names:
         _prompt_setup(args)
