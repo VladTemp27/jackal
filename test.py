@@ -299,6 +299,31 @@ class JackalTest(unittest.TestCase):
         r = self.run_piped("use")
         self.assertNotEqual(r.returncode, 0)
 
+    def test_gateway_flag_overrides_default_without_changing_it(self):
+        self.seed_named("work", "https://work.test", "tok_w")
+        self.seed_named("personal", "https://personal.test", "tok_p")
+        self.set_current("work")
+        r = self.run_piped("--gateway", "personal", "-p", "hi")
+        self.assertIn("url=[https://personal.test]", r.stdout)
+        self.assertEqual((self.home / ".jackal" / "current").read_text().strip(), "work")
+
+    def test_gateway_flag_unknown_name_errors(self):
+        self.seed_named("work", "https://work.test", "tok_w")
+        r = self.run_piped("--gateway", "ghost", "-p", "hi")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no gateway named", r.stdout + r.stderr)
+
+    def test_gateway_flag_requires_name(self):
+        r = self.run_piped("--gateway")
+        self.assertNotEqual(r.returncode, 0)
+
+    def test_gateway_flag_only_recognized_at_front(self):
+        """--gateway must be args[0] — elsewhere it's just forwarded to claude untouched."""
+        self.seed_named("work", "https://work.test", "tok_w")
+        r = self.run_piped("-p", "hi", "--gateway", "work")
+        self.assertIn("url=[https://work.test]", r.stdout)  # the sole/default gateway, not overridden
+        self.assertIn("args=[-p hi --gateway work]", r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
