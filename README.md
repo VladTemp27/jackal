@@ -149,10 +149,27 @@ Requires Python 3.9+ (present by default on macOS and most Linux distributions).
 | Windows | tested in CI — native cmd/PowerShell, no WSL needed |
 | BSD | POSIX paths only, untested |
 
-Known limits: the box-drawing characters need a UTF-8 locale (`LANG=C` renders
-mojibake; `NO_COLOR=1` strips colour but not the box). On Windows, `0o600` maps
-onto the read-only attribute rather than real POSIX permissions, so the
-credential file is less protected there than on Unix.
+### Windows requires `python3` on PATH
+
+npm's Windows shim invokes the shebang interpreter **by name** — literally
+`python3`, not `python`. The Microsoft Store build of Python provides
+`python3.exe`; **the python.org installer does not**, it ships `python.exe` and
+the `py` launcher. If `jackal` reports *"python3 is not recognized"*, either
+install Python from the Store, or make an alias next to your `python.exe`:
+
+```powershell
+Copy-Item (Get-Command python).Source (Join-Path (Split-Path (Get-Command python).Source) python3.exe)
+```
+
+### Other known limits
+
+- The box-drawing characters need a UTF-8 locale — `LANG=C` renders mojibake,
+  and `NO_COLOR=1` strips colour but not the box.
+- On Windows, `0o600` maps onto the read-only attribute rather than real POSIX
+  permissions, so the credential file is less protected there than on Unix.
+- The interactive first-run prompt is exercised by CI on Linux and macOS only;
+  the pty-driven tests skip on Windows, so that path is covered there by
+  design review rather than by test.
 
 ## Why not Homebrew
 
