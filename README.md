@@ -3,17 +3,20 @@
 Launch Claude Code against a custom Anthropic gateway, without disturbing your
 normal `claude`.
 
-`jackal` is a single-file Python script with no dependencies. On first run it prompts for a base
-URL and auth token, stores them in `~/.jackal.env` at `0600`, and from then on
-execs `claude` with those in the environment. Your regular `claude` keeps using
-your regular account.
+`jackal` is a single-file Python script with no dependencies. On first run (or when adding
+a new gateway with `--setup`), it prompts for a gateway name, base URL, and auth token,
+stores them in `~/.jackal/<name>.env` at `0600`, and from then on execs `claude` with
+those in the environment. Your regular `claude` keeps using your regular account.
 
 ```
   ╭────────────────────────────────────────╮
   │  jackal  ·  Claude via custom gateway  │
   ╰────────────────────────────────────────╯
 
-  writing to ~/.jackal.env
+  ▸ Gateway name
+    › work
+
+  writing to ~/.jackal/work.env
 
   ▸ Anthropic base URL
     › https://gw.example.com
@@ -21,7 +24,7 @@ your regular account.
   ▸ Auth token   input hidden
     › 
 
-  ✓  saved ~/.jackal.env  (0600, 19 chars)
+  ✓  saved gateway "work"  (0600, 42 chars)
 ```
 
 ## Install
