@@ -49,26 +49,42 @@ immediately with no reinstall step.
 ## Use
 
 ```sh
-jackal                  # first run prompts for URL + token, then launches
-jackal -p "hello"       # all arguments forward to claude untouched
-jackal --setup          # change the URL/token later (--reconfigure also works)
+jackal                       # launches against the default gateway
+jackal -p "hello"            # all arguments forward to claude untouched
+jackal --setup                # add a new gateway or edit an existing one (prompts for its name)
+jackal use work               # switch the default gateway to "work"
+jackal --gateway work -p "hi" # one-off launch against "work" without changing the default
+jackal --list                 # show saved gateways, marking the default
+jackal --remove work          # delete a saved gateway
 ```
 
-Everything except `--setup` / `--reconfigure` is passed straight through to
-`claude`, so any flag or subcommand it accepts works.
+The first gateway you set up automatically becomes the default. Adding more
+gateways with `jackal --setup` never changes the default on its own — switch
+it explicitly with `jackal use <name>`. If you only ever save one gateway,
+`jackal` just uses it; if you save more than one and never pick a default,
+`jackal` refuses to guess and tells you to run `jackal use <name>`.
+
+Everything except `--setup` / `--reconfigure`, `use`, `--list`, `--remove`, and
+`--gateway` is passed straight through to `claude`, so any flag or subcommand it
+accepts works.
 
 ## Uninstall
 
 ```sh
 npm un -g jackal-cli    # remove the command
-rm ~/.jackal.env        # remove the stored gateway URL and token
+rm -rf ~/.jackal        # remove every stored gateway URL and token
 ```
 
-`npm un` removes the binary but leaves `~/.jackal.env` behind — it holds a live
-credential, so delete it explicitly if you're done with the gateway. If you
+`npm un` removes the binary but leaves `~/.jackal/` behind — it holds live
+credentials, so delete it explicitly if you're done with the gateways. If you
 installed from source, `npm unlink -g jackal-cli` instead.
 
 ## How it works
+
+Gateways are stored one-per-file under `~/.jackal/<name>.env` (same `0600`
+permissions as before), with `~/.jackal/current` naming the default. A
+pre-existing `~/.jackal.env` from an older version of jackal is migrated
+automatically, once, into a gateway named `default`.
 
 Two environment variables, set for one process only:
 
@@ -179,9 +195,9 @@ enough traction to justify it, a formula is about fifteen lines.
 
 ## Security
 
-`~/.jackal.env` holds a live credential in plaintext at `0600`. It lives outside
-the repo and `.gitignore` blocks `*.env` as a second line of defence, but it is
-still a file on disk — treat it like an SSH key.
+`~/.jackal/` holds live credentials in plaintext at `0600`. It lives outside
+the repo and `.gitignore` blocks `*.env` as a second line of defence, but they are
+still files on disk — treat them like SSH keys.
 
 Pointing `ANTHROPIC_BASE_URL` at a gateway routes every prompt, file, and diff
 through whoever operates it. Fine for your own or your employer's infrastructure;
