@@ -62,8 +62,8 @@ jackal --remove work          # delete a saved gateway
 ```
 
 The first gateway you set up automatically becomes the default. Adding more
-gateways with `jackal --setup` never changes the default on its own — switch
-it explicitly with `jackal use <name>`. If you only ever save one gateway,
+gateways with `jackal --setup` never changes an *already-set* default on its
+own — switch it explicitly with `jackal use <name>`. If you only ever save one gateway,
 `jackal` just uses it; if you save more than one and never pick a default,
 `jackal` refuses to guess and tells you to run `jackal use <name>`.
 
@@ -113,13 +113,13 @@ lives in the keychain. The two never collide.
 `jackal` prints a one-line banner naming the active gateway before handing off:
 
 ```
-  ◆ jackal · gateway gw.example.com
+  ◆ jackal · gateway work · gw.example.com
 ```
 
 Claude Code renders inline — no alt-screen, no clear-screen — so the banner
-survives above its welcome box rather than being wiped. It shows the **host
-only**, never the token, and is skipped when stdout is not a tty so
-`jackal -p "..." > file` stays clean.
+survives above its welcome box rather than being wiped. It shows the
+gateway's **name and host**, never the token, and is skipped when stdout is
+not a tty so `jackal -p "..." > file` stays clean.
 
 This affects `jackal` alone. `claude` and `jackal` are independent executables,
 and nothing in your shell rc or `~/.claude/settings.json` references jackal —

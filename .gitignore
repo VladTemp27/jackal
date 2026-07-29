@@ -1,7 +1,6 @@
 # Never commit credentials. jackal keeps them under ~/.jackal/ (outside the
 # repo), but this guards against a stray copy landing here.
 *.env
-.jackal.env
 
 # Python
 __pycache__/

@@ -189,6 +189,7 @@ class JackalTest(unittest.TestCase):
         """A name that isn't safe as a filename component must be rejected."""
         self.run_pty(inputs=["../evil"])
         self.assertFalse((self.home / ".jackal").exists(), "no directory should be created")
+        self.assertFalse((self.home / "evil.env").exists(), "no file should land outside ~/.jackal")
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_bad_url_writes_nothing(self):
@@ -214,6 +215,15 @@ class JackalTest(unittest.TestCase):
         self.seed("https://keep.test", "tok_keep")  # old flat file, migrates to "default"
         self.run_pty(inputs=["default", "ftp://bad"], args=["--setup"])
         self.assertIn("https://keep.test", (self.home / ".jackal" / "default.env").read_text())
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_setup_with_default_already_set_leaves_current_unchanged(self):
+        self.seed_named("work", "https://work.test", "tok_w")
+        self.set_current("work")
+        self.run_pty(
+            inputs=["personal", "https://personal.test", "tok_p"], args=["--setup", "--version"]
+        )
+        self.assertEqual((self.home / ".jackal" / "current").read_text().strip(), "work")
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_banner_on_tty_only(self):
@@ -243,6 +253,7 @@ class JackalTest(unittest.TestCase):
 
     def test_migrates_old_flat_config(self):
         self.seed("https://old.test", "tok_old")
+        (self.home / ".jackal.env").chmod(0o644)
         self.run_piped("-p", "hi")
         self.assertFalse((self.home / ".jackal.env").exists(), "old file must be moved, not copied")
         gw = self.home / ".jackal" / "default.env"
@@ -376,6 +387,29 @@ class JackalTest(unittest.TestCase):
 
     def test_remove_requires_name(self):
         r = self.run_piped("--remove")
+        self.assertNotEqual(r.returncode, 0)
+
+    def test_remove_rejects_traversal_name(self):
+        self.seed_named("work", "https://work.test", "tok_w")
+        victim = self.home / "victim.env"
+        victim.write_text("ANTHROPIC_BASE_URL=https://evil.test\nANTHROPIC_AUTH_TOKEN=tok_e\n")
+        r = self.run_piped("--remove", "../victim")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertTrue(victim.exists(), "traversal must not delete files outside ~/.jackal")
+
+    def test_use_rejects_traversal_name(self):
+        self.seed_named("work", "https://work.test", "tok_w")
+        victim = self.home / "victim.env"
+        victim.write_text("ANTHROPIC_BASE_URL=https://evil.test\nANTHROPIC_AUTH_TOKEN=tok_e\n")
+        r = self.run_piped("use", "../victim")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse((self.home / ".jackal" / "current").exists())
+
+    def test_gateway_flag_rejects_traversal_name(self):
+        self.seed_named("work", "https://work.test", "tok_w")
+        victim = self.home / "victim.env"
+        victim.write_text("ANTHROPIC_BASE_URL=https://evil.test\nANTHROPIC_AUTH_TOKEN=tok_e\n")
+        r = self.run_piped("--gateway", "../victim", "-p", "hi")
         self.assertNotEqual(r.returncode, 0)
 
 

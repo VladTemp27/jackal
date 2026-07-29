@@ -108,11 +108,21 @@ def gateway_path(name):
     return JACKAL_DIR / f"{name}.env"
 
 
+def resolve_gateway(name):
+    """A validated, existing gateway's path, or exit with a clear error."""
+    if not valid_name(name):
+        sys.exit(f"jackal: invalid gateway name '{name}' — letters, digits, - and _ only")
+    path = gateway_path(name)
+    if not path.is_file():
+        sys.exit(f"jackal: no gateway named '{name}' — see jackal --list")
+    return path
+
+
 def list_gateways():
     """Sorted names of all saved gateways."""
     if not JACKAL_DIR.is_dir():
         return []
-    return sorted(p.stem for p in JACKAL_DIR.glob("*.env"))
+    return sorted(p.stem for p in JACKAL_DIR.glob("*.env") if p.is_file())
 
 
 def read_current():
@@ -120,11 +130,11 @@ def read_current():
     if not CURRENT_FILE.is_file():
         return None
     name = CURRENT_FILE.read_text().strip()
-    return name if name and gateway_path(name).is_file() else None
+    return name if valid_name(name) and gateway_path(name).is_file() else None
 
 
 def write_current(name):
-    JACKAL_DIR.mkdir(exist_ok=True)
+    JACKAL_DIR.mkdir(mode=0o700, exist_ok=True)
     CURRENT_FILE.write_text(name + "\n")
 
 
@@ -132,8 +142,9 @@ def migrate_old_config():
     """Move a pre-multi-gateway ~/.jackal.env into ~/.jackal/default.env."""
     if not OLD_CFG.is_file() or list_gateways():
         return
-    JACKAL_DIR.mkdir(exist_ok=True)
+    JACKAL_DIR.mkdir(mode=0o700, exist_ok=True)
     OLD_CFG.rename(gateway_path("default"))
+    os.chmod(gateway_path("default"), 0o600)
     write_current("default")
 
 
@@ -185,7 +196,7 @@ def run_setup(out, tty_in):
     if not token:
         die("token required — nothing saved")
 
-    JACKAL_DIR.mkdir(exist_ok=True)
+    JACKAL_DIR.mkdir(mode=0o700, exist_ok=True)
     # O_CREAT with mode 0600 means the file is never briefly world-readable.
     # chmod afterwards also covers overwriting a pre-existing file.
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -248,6 +259,9 @@ def print_list():
         print(f"  {c['C']}▸{c['Z']} {name}{mark}   {c['D']}{_host(url)}{c['Z']}")
 
 
+# --------------------------------------------------------------------------
+
+
 def launch(name, args):
     """Load a gateway's config, show the banner, and hand off to claude."""
     load_config(gateway_path(name))
@@ -292,8 +306,7 @@ def main():
         if len(args) < 2:
             sys.exit("jackal: use requires a gateway name, e.g. jackal use work")
         name = args[1]
-        if not gateway_path(name).is_file():
-            sys.exit(f"jackal: no gateway named '{name}' — see jackal --list")
+        resolve_gateway(name)
         write_current(name)
         print(f"  ✓  default gateway is now \"{name}\"")
         return
@@ -302,8 +315,7 @@ def main():
         if len(args) < 2:
             sys.exit("jackal: --gateway requires a gateway name, e.g. jackal --gateway work")
         name = args[1]
-        if not gateway_path(name).is_file():
-            sys.exit(f"jackal: no gateway named '{name}' — see jackal --list")
+        resolve_gateway(name)
         launch(name, args[2:])
         return
 
@@ -315,9 +327,7 @@ def main():
         if len(args) < 2:
             sys.exit("jackal: --remove requires a gateway name, e.g. jackal --remove work")
         name = args[1]
-        path = gateway_path(name)
-        if not path.is_file():
-            sys.exit(f"jackal: no gateway named '{name}' — see jackal --list")
+        path = resolve_gateway(name)
         was_current = read_current() == name
         path.unlink()
         if was_current:
