@@ -27,7 +27,7 @@
 - Test: `test.py`
 
 **Interfaces:**
-- Produces (used by every later task): `JACKAL_DIR: Path`, `CURRENT_FILE: Path`, `valid_name(name: str) -> bool`, `gateway_path(name: str) -> Path`, `list_gateways() -> list[str]`, `read_current() -> str | None`, `write_current(name: str) -> None`, `launch(name: str, args: list[str]) -> None` (loads config, prints banner, execs/spawns `claude` — never returns on POSIX, exits the process on all platforms).
+- Produces (used by every later task): `JACKAL_DIR: Path`, `CURRENT_FILE: Path`, `valid_name(name: str) -> bool`, `gateway_path(name: str) -> Path`, `list_gateways() -> list[str]`, `read_current() -> str | None`, `write_current(name: str) -> None`, `_host(url: str) -> str`, `launch(name: str, args: list[str]) -> None` (loads config, prints banner, execs/spawns `claude` — never returns on POSIX, exits the process on all platforms).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -287,15 +287,20 @@ def load_config(path):
         os.environ[key.strip()] = value.strip()
 ```
 
-Replace `banner` (it now takes the active gateway's name so multiple similarly-hosted gateways stay distinguishable):
+Replace `banner` (it now takes the active gateway's name so multiple similarly-hosted gateways stay distinguishable). This also introduces `_host()`, a tiny shared helper `print_list()` reuses in Task 4 instead of duplicating the same parsing:
 
 ```python
+def _host(url):
+    """The bare host from a base URL, e.g. https://gw.test/v1 -> gw.test."""
+    return url.split("://")[-1].split("/")[0]
+
+
 def banner(name):
     """One line naming the active gateway. Never the token, never when piped."""
     if not sys.stdout.isatty():
         return
     c = colors()
-    host = os.environ.get("ANTHROPIC_BASE_URL", "").split("://")[-1].split("/")[0]
+    host = _host(os.environ.get("ANTHROPIC_BASE_URL", ""))
     if c["C"]:
         print(
             f"\n  {c['C']}◆{c['Z']} {c['B']}jackal{c['Z']} {c['D']}· gateway{c['Z']} "
@@ -537,7 +542,7 @@ git commit -m "Add jackal --gateway <name> for one-off launches"
 - Test: `test.py`
 
 **Interfaces:**
-- Consumes: `list_gateways`, `read_current`, `gateway_path`, `colors` (Task 1 and pre-existing).
+- Consumes: `list_gateways`, `read_current`, `gateway_path`, `_host`, `colors` (Task 1 and pre-existing).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -571,7 +576,7 @@ Expected: FAIL — `--list` isn't recognized yet (falls through to the setup/dis
 
 - [ ] **Step 3: Add `print_list()` and its dispatch**
 
-In `jackal`, add this function right after `banner`:
+In `jackal`, add this function right after `banner`. It reuses the `_host()` helper Task 1 added alongside `banner()` rather than re-parsing the URL inline:
 
 ```python
 def print_list():
@@ -582,12 +587,12 @@ def print_list():
     current = read_current()
     c = colors()
     for name in names:
-        host = ""
+        url = ""
         for line in gateway_path(name).read_text().splitlines():
             if line.startswith("ANTHROPIC_BASE_URL="):
-                host = line.partition("=")[2].strip().split("://")[-1].split("/")[0]
+                url = line.partition("=")[2].strip()
         mark = f"  {c['G']}(default){c['Z']}" if name == current else ""
-        print(f"  {c['C']}▸{c['Z']} {name}{mark}   {c['D']}{host}{c['Z']}")
+        print(f"  {c['C']}▸{c['Z']} {name}{mark}   {c['D']}{_host(url)}{c['Z']}")
 ```
 
 In `main()`, insert this block right after the `--gateway` block from Task 3:
