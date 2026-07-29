@@ -188,8 +188,12 @@ class JackalTest(unittest.TestCase):
     def test_bad_name_writes_nothing(self):
         """A name that isn't safe as a filename component must be rejected."""
         self.run_pty(inputs=["../evil"])
-        self.assertFalse((self.home / ".jackal").exists(), "no directory should be created")
-        self.assertFalse((self.home / "evil.env").exists(), "no file should land outside ~/.jackal")
+        self.assertFalse(
+            (self.home / ".jackal").exists(), "no directory should be created"
+        )
+        self.assertFalse(
+            (self.home / "evil.env").exists(), "no file should land outside ~/.jackal"
+        )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_bad_url_writes_nothing(self):
@@ -212,22 +216,31 @@ class JackalTest(unittest.TestCase):
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_aborted_setup_preserves_config(self):
         """A failed reconfigure must not destroy working credentials."""
-        self.seed("https://keep.test", "tok_keep")  # old flat file, migrates to "default"
+        self.seed(
+            "https://keep.test", "tok_keep"
+        )  # old flat file, migrates to "default"
         self.run_pty(inputs=["default", "ftp://bad"], args=["--setup"])
-        self.assertIn("https://keep.test", (self.home / ".jackal" / "default.env").read_text())
+        self.assertIn(
+            "https://keep.test", (self.home / ".jackal" / "default.env").read_text()
+        )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_setup_with_default_already_set_leaves_current_unchanged(self):
         self.seed_named("work", "https://work.test", "tok_w")
         self.set_current("work")
         self.run_pty(
-            inputs=["personal", "https://personal.test", "tok_p"], args=["--setup", "--version"]
+            inputs=["personal", "https://personal.test", "tok_p"],
+            args=["--setup", "--version"],
         )
-        self.assertEqual((self.home / ".jackal" / "current").read_text().strip(), "work")
+        self.assertEqual(
+            (self.home / ".jackal" / "current").read_text().strip(), "work"
+        )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_banner_on_tty_only(self):
-        self.seed("https://banner.test", "tok_b")  # old flat file, migrates to "default"
+        self.seed(
+            "https://banner.test", "tok_b"
+        )  # old flat file, migrates to "default"
         out, _ = self.run_pty(args=["-p", "hi"])
         self.assertIn("default", out, "banner must name the active gateway")
         self.assertIn("banner.test", out)
@@ -255,12 +268,20 @@ class JackalTest(unittest.TestCase):
         self.seed("https://old.test", "tok_old")
         (self.home / ".jackal.env").chmod(0o644)
         self.run_piped("-p", "hi")
-        self.assertFalse((self.home / ".jackal.env").exists(), "old file must be moved, not copied")
+        self.assertFalse(
+            (self.home / ".jackal.env").exists(), "old file must be moved, not copied"
+        )
         gw = self.home / ".jackal" / "default.env"
         self.assertTrue(gw.exists())
-        self.assertEqual(gw.stat().st_mode & 0o777, 0o600)
+        if POSIX:
+            # Windows chmod only toggles the read-only attribute (no real
+            # POSIX mode bits), so stat().st_mode never reads back as 0600
+            # there — this assertion is meaningful on POSIX only.
+            self.assertEqual(gw.stat().st_mode & 0o777, 0o600)
         self.assertIn("https://old.test", gw.read_text())
-        self.assertEqual((self.home / ".jackal" / "current").read_text().strip(), "default")
+        self.assertEqual(
+            (self.home / ".jackal" / "current").read_text().strip(), "default"
+        )
 
     def test_single_gateway_auto_used_without_default(self):
         self.seed_named("work", "https://work.test", "tok_w")
@@ -290,7 +311,9 @@ class JackalTest(unittest.TestCase):
         r = self.run_piped("use", "personal")
         self.assertEqual(r.returncode, 0)
         self.assertIn("personal", r.stdout)
-        self.assertEqual((self.home / ".jackal" / "current").read_text().strip(), "personal")
+        self.assertEqual(
+            (self.home / ".jackal" / "current").read_text().strip(), "personal"
+        )
 
     def test_use_then_bare_launches_chosen_gateway(self):
         self.seed_named("work", "https://work.test", "tok_w")
@@ -316,7 +339,9 @@ class JackalTest(unittest.TestCase):
         self.set_current("work")
         r = self.run_piped("--gateway", "personal", "-p", "hi")
         self.assertIn("url=[https://personal.test]", r.stdout)
-        self.assertEqual((self.home / ".jackal" / "current").read_text().strip(), "work")
+        self.assertEqual(
+            (self.home / ".jackal" / "current").read_text().strip(), "work"
+        )
 
     def test_gateway_flag_unknown_name_errors(self):
         self.seed_named("work", "https://work.test", "tok_w")
@@ -332,7 +357,9 @@ class JackalTest(unittest.TestCase):
         """--gateway must be args[0] — elsewhere it's just forwarded to claude untouched."""
         self.seed_named("work", "https://work.test", "tok_w")
         r = self.run_piped("-p", "hi", "--gateway", "work")
-        self.assertIn("url=[https://work.test]", r.stdout)  # the sole/default gateway, not overridden
+        self.assertIn(
+            "url=[https://work.test]", r.stdout
+        )  # the sole/default gateway, not overridden
         self.assertIn("args=[-p hi --gateway work]", r.stdout)
 
     def test_list_shows_all_gateways_and_marks_default(self):
@@ -377,7 +404,9 @@ class JackalTest(unittest.TestCase):
         self.seed_named("personal", "https://personal.test", "tok_p")
         self.set_current("work")
         self.run_piped("--remove", "personal")
-        self.assertEqual((self.home / ".jackal" / "current").read_text().strip(), "work")
+        self.assertEqual(
+            (self.home / ".jackal" / "current").read_text().strip(), "work"
+        )
 
     def test_remove_unknown_gateway_errors(self):
         self.seed_named("work", "https://work.test", "tok_w")
@@ -392,15 +421,21 @@ class JackalTest(unittest.TestCase):
     def test_remove_rejects_traversal_name(self):
         self.seed_named("work", "https://work.test", "tok_w")
         victim = self.home / "victim.env"
-        victim.write_text("ANTHROPIC_BASE_URL=https://evil.test\nANTHROPIC_AUTH_TOKEN=tok_e\n")
+        victim.write_text(
+            "ANTHROPIC_BASE_URL=https://evil.test\nANTHROPIC_AUTH_TOKEN=tok_e\n"
+        )
         r = self.run_piped("--remove", "../victim")
         self.assertNotEqual(r.returncode, 0)
-        self.assertTrue(victim.exists(), "traversal must not delete files outside ~/.jackal")
+        self.assertTrue(
+            victim.exists(), "traversal must not delete files outside ~/.jackal"
+        )
 
     def test_use_rejects_traversal_name(self):
         self.seed_named("work", "https://work.test", "tok_w")
         victim = self.home / "victim.env"
-        victim.write_text("ANTHROPIC_BASE_URL=https://evil.test\nANTHROPIC_AUTH_TOKEN=tok_e\n")
+        victim.write_text(
+            "ANTHROPIC_BASE_URL=https://evil.test\nANTHROPIC_AUTH_TOKEN=tok_e\n"
+        )
         r = self.run_piped("use", "../victim")
         self.assertNotEqual(r.returncode, 0)
         self.assertFalse((self.home / ".jackal" / "current").exists())
@@ -408,7 +443,9 @@ class JackalTest(unittest.TestCase):
     def test_gateway_flag_rejects_traversal_name(self):
         self.seed_named("work", "https://work.test", "tok_w")
         victim = self.home / "victim.env"
-        victim.write_text("ANTHROPIC_BASE_URL=https://evil.test\nANTHROPIC_AUTH_TOKEN=tok_e\n")
+        victim.write_text(
+            "ANTHROPIC_BASE_URL=https://evil.test\nANTHROPIC_AUTH_TOKEN=tok_e\n"
+        )
         r = self.run_piped("--gateway", "../victim", "-p", "hi")
         self.assertNotEqual(r.returncode, 0)
 

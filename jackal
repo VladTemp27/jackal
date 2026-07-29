@@ -111,7 +111,9 @@ def gateway_path(name):
 def resolve_gateway(name):
     """A validated, existing gateway's path, or exit with a clear error."""
     if not valid_name(name):
-        sys.exit(f"jackal: invalid gateway name '{name}' — letters, digits, - and _ only")
+        sys.exit(
+            f"jackal: invalid gateway name '{name}' — letters, digits, - and _ only"
+        )
     path = gateway_path(name)
     if not path.is_file():
         sys.exit(f"jackal: no gateway named '{name}' — see jackal --list")
@@ -176,7 +178,9 @@ def run_setup(out, tty_in):
     w(f"  {c['C']}▸{c['Z']} {c['B']}Gateway name{c['Z']}\n    {c['D']}›{c['Z']} ")
     name = (tty_in.readline() or "").strip()
     if not valid_name(name):
-        die("gateway name must be non-empty and only letters, digits, - or _ — nothing saved")
+        die(
+            "gateway name must be non-empty and only letters, digits, - or _ — nothing saved"
+        )
 
     path = gateway_path(name)
     short = str(path).replace(str(Path.home()), "~", 1)
@@ -208,7 +212,7 @@ def run_setup(out, tty_in):
         write_current(name)
 
     w(
-        f"\n\n  {c['G']}✓{c['Z']}  saved gateway \"{name}\"  {c['D']}(0600, {len(token)} chars){c['Z']}\n\n"
+        f'\n\n  {c["G"]}✓{c["Z"]}  saved gateway "{name}"  {c["D"]}(0600, {len(token)} chars){c["Z"]}\n\n'
     )
     return name
 
@@ -295,6 +299,16 @@ def _prompt_setup(args):
 
 
 def main():
+    # A piped/redirected stdout on Windows defaults to the legacy ANSI code
+    # page, which can't encode the checkmark/triangle glyphs below and would
+    # crash instead of printing (e.g. `jackal --list > file`, or any command
+    # under CI). Force UTF-8 so that always succeeds.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass  # exotic stdio (e.g. replaced by a test harness) — best effort only
+
     args = sys.argv[1:]
     migrate_old_config()
 
@@ -308,12 +322,14 @@ def main():
         name = args[1]
         resolve_gateway(name)
         write_current(name)
-        print(f"  ✓  default gateway is now \"{name}\"")
+        print(f'  ✓  default gateway is now "{name}"')
         return
 
     if args and args[0] == "--gateway":
         if len(args) < 2:
-            sys.exit("jackal: --gateway requires a gateway name, e.g. jackal --gateway work")
+            sys.exit(
+                "jackal: --gateway requires a gateway name, e.g. jackal --gateway work"
+            )
         name = args[1]
         resolve_gateway(name)
         launch(name, args[2:])
@@ -325,14 +341,16 @@ def main():
 
     if args and args[0] == "--remove":
         if len(args) < 2:
-            sys.exit("jackal: --remove requires a gateway name, e.g. jackal --remove work")
+            sys.exit(
+                "jackal: --remove requires a gateway name, e.g. jackal --remove work"
+            )
         name = args[1]
         path = resolve_gateway(name)
         was_current = read_current() == name
         path.unlink()
         if was_current:
             CURRENT_FILE.unlink(missing_ok=True)
-        print(f"  ✓  removed gateway \"{name}\"")
+        print(f'  ✓  removed gateway "{name}"')
         return
 
     names = list_gateways()
