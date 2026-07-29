@@ -311,6 +311,20 @@ def main():
         print_list()
         return
 
+    if args and args[0] == "--remove":
+        if len(args) < 2:
+            sys.exit("jackal: --remove requires a gateway name, e.g. jackal --remove work")
+        name = args[1]
+        path = gateway_path(name)
+        if not path.is_file():
+            sys.exit(f"jackal: no gateway named '{name}' — see jackal --list")
+        was_current = read_current() == name
+        path.unlink()
+        if was_current:
+            CURRENT_FILE.unlink(missing_ok=True)
+        print(f"  ✓  removed gateway \"{name}\"")
+        return
+
     names = list_gateways()
     if not names:
         _prompt_setup(args)

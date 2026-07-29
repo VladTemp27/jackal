@@ -343,6 +343,41 @@ class JackalTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
         self.assertIn("no gateways saved", r.stdout)
 
+    def test_remove_deletes_gateway_file(self):
+        self.seed_named("work", "https://work.test", "tok_w")
+        self.seed_named("personal", "https://personal.test", "tok_p")
+        r = self.run_piped("--remove", "personal")
+        self.assertEqual(r.returncode, 0)
+        self.assertFalse((self.home / ".jackal" / "personal.env").exists())
+        self.assertTrue((self.home / ".jackal" / "work.env").exists())
+
+    def test_remove_default_clears_current(self):
+        self.seed_named("work", "https://work.test", "tok_w")
+        self.seed_named("personal", "https://personal.test", "tok_p")
+        self.set_current("personal")
+        self.run_piped("--remove", "personal")
+        self.assertFalse((self.home / ".jackal" / "current").exists())
+        # exactly one gateway remains, so bare jackal auto-uses it (Task 1 rule)
+        r = self.run_piped("-p", "hi")
+        self.assertIn("url=[https://work.test]", r.stdout)
+
+    def test_remove_non_default_leaves_current_untouched(self):
+        self.seed_named("work", "https://work.test", "tok_w")
+        self.seed_named("personal", "https://personal.test", "tok_p")
+        self.set_current("work")
+        self.run_piped("--remove", "personal")
+        self.assertEqual((self.home / ".jackal" / "current").read_text().strip(), "work")
+
+    def test_remove_unknown_gateway_errors(self):
+        self.seed_named("work", "https://work.test", "tok_w")
+        r = self.run_piped("--remove", "ghost")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no gateway named", r.stdout + r.stderr)
+
+    def test_remove_requires_name(self):
+        r = self.run_piped("--remove")
+        self.assertNotEqual(r.returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
