@@ -12,7 +12,9 @@ and `ANTHROPIC_AUTH_TOKEN` for one process, then `exec`ing `claude`. Your normal
 `claude` for subscription sessions — both work at the same time, in two
 terminals, with no switching step.
 
-Single-file Python script, no dependencies, MIT. It can save more than one
+A Python script behind a small Node launcher, no third-party dependencies in
+either language, MIT. Node is not an extra requirement — installing from npm
+already means you have it. `jackal` can save more than one
 named gateway: `jackal --setup` prompts for a name, a base URL, and a token,
 and writes them to `~/.jackal/<name>.env` at mode `0600`. Every run after that
 launches against the default gateway; switch it with `jackal use <name>`, or
@@ -20,7 +22,8 @@ override for one run with `jackal --gateway <name>`.
 
 ## Install
 
-Requires Python 3.9+ and [Claude Code](https://claude.com/claude-code)
+Requires Node 14+ (already installed if you can run `npm`), Python 3.9+, and
+[Claude Code](https://claude.com/claude-code)
 (`npm i -g @anthropic-ai/claude-code`).
 
 **npm** — run without installing, or install globally:
@@ -147,10 +150,12 @@ Two environment variables, set for one process only:
 | `ANTHROPIC_BASE_URL` | points Claude Code at your gateway |
 | `ANTHROPIC_AUTH_TOKEN` | bearer token sent to it |
 
-They're set immediately before `os.execv`, which **replaces** the jackal process
-rather than spawning a child — so `claude` inherits them directly, and no
-wrapper process lingers. They apply to that one process and nothing else: no
-`export` in your shell rc, no leakage into other tools.
+They're set immediately before `os.execv`, which **replaces** the Python
+process rather than spawning a child, so `claude` inherits them directly
+instead of through a Python process that stuck around. (The Node launcher one
+level up is a separate wrapper that does linger for the run — see Design
+notes.) They apply to that one process and nothing else: no `export` in your
+shell rc, no leakage into other tools.
 
 ## FAQ
 
@@ -236,9 +241,19 @@ reaches a gateway. The pty tests self-skip on Windows.
 
 ## Design notes: `os.execv`, `/dev/tty`, and `0600`
 
-- **`os.execv` replaces the process; `subprocess` would not.** On POSIX,
+- **The Node launcher (`bin/jackal.js`) spawns Python; it does not exec it.**
+  Node has nothing like `execve` to hand the process off and disappear, so a
+  node process sits in front of Python on every platform — the price of
+  resolving the interpreter ourselves rather than trusting whatever name npm's
+  generated shim happens to look up (see the Windows note under
+  Compatibility). It runs with `stdio: 'inherit'`, so the terminal, the
+  tty/console checks below, and signal delivery to the foreground process
+  group are unaffected; it exits with Python's own status and re-raises a
+  killing signal on itself rather than inventing an exit code.
+- **`os.execv` replaces the Python process; `subprocess` would not.** On POSIX,
   `jackal` calls `os.execv`, so `claude` inherits the terminal, signals, and exit
-  status directly and no wrapper is left babysitting it. Windows has no `execve`
+  status directly from Python — the one extra process in the chain is the Node
+  launcher above it, not this handoff. Windows has no `execve`
   — `os.execv` there detaches and returns immediately, so the shell prompt comes
   back mid-session. That branch uses `subprocess.run` and propagates the exit
   code.
@@ -268,32 +283,35 @@ reaches a gateway. The pty tests self-skip on Windows.
 
 ## Compatibility
 
-Requires Python 3.9+ (present by default on macOS and most Linux distributions).
+Requires Python 3.9+ (present by default on macOS and most Linux
+distributions) and Node 14+, which running `jackal` via npm already
+guarantees.
 
 | Platform | Status |
 |---|---|
-| Linux | tested in CI, Python 3.9 and 3.13 |
-| macOS | tested in CI, Python 3.9 and 3.13 |
+| Linux | tested in CI, Python 3.9, 3.13 and 3.14 |
+| macOS | tested in CI, Python 3.9, 3.13 and 3.14 |
 | Windows | tested in CI — native cmd/PowerShell, no WSL needed |
 | BSD | POSIX paths only, untested |
 
-### Windows: "python3 is not recognized"
+### Windows: Python is resolved automatically
 
-If `jackal` on Windows reports that `python3` is not recognized, Python is
-installed but not under the name npm looks for.
+`bin/jackal.js`, the npm-installed entry point, resolves the interpreter
+itself instead of leaving Windows' shim to look up a hardcoded name. It tries
+`python3`, then `python`, then `py -3`, running each candidate against a small
+probe script and accepting one only if it echoes back a sentinel proving a
+real Python 3.9+ actually ran it — a name that merely launches without error
+doesn't count. Because of that, `python3` no longer has to be the name on
+PATH: a stock python.org install, which ships `python.exe` and the `py`
+launcher but never `python3.exe`, now works with no manual step.
 
-npm's Windows shim invokes the shebang interpreter **by name** — literally
-`python3`, not `python`. The Microsoft Store build of Python provides
-`python3.exe`; **the python.org installer does not**, it ships `python.exe` and
-the `py` launcher. This affects any npm package with a `#!/usr/bin/env python3`
-shebang, not only `jackal`.
-
-Install Python from the Microsoft Store, or add a `python3.exe` next to your
-existing `python.exe`:
-
-```powershell
-Copy-Item (Get-Command python).Source (Join-Path (Split-Path (Get-Command python).Source) python3.exe)
-```
+If jackal still prints *"no usable Python 3.9+ found"*, the likely cause is
+the Microsoft Store app-execution-alias stub: it claims a `python3` or
+`python` name on PATH without being a real interpreter, prints something like
+*"Python was not found"*, and exits `9009` without running anything. jackal
+detects that signature and says so directly, pointing at Settings > Apps >
+Advanced app settings > App execution aliases — turn the alias off there, or
+install Python from the Store so the name resolves to something real.
 
 ### Errors
 
@@ -316,6 +334,12 @@ Copy-Item (Get-Command python).Source (Join-Path (Split-Path (Get-Command python
 - The interactive first-run prompt is exercised by CI on Linux and macOS only;
   the pty-driven tests skip on Windows, so that path is covered there by
   design review rather than by test.
+- On Windows, a candidate that resolves to a `.bat` or `.cmd` shim rather than
+  a real `.exe` — pyenv-win installs Python that way — cannot be launched
+  without running it through a shell, which the launcher deliberately does not
+  do because it forwards your arguments. Such a candidate fails the probe and
+  is skipped, so those setups fall through to `py -3`. If you hit this with no
+  `py` launcher installed, say so on the issue tracker.
 
 ## Why not Homebrew
 

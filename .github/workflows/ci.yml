@@ -13,7 +13,9 @@ jobs:
         # windows-latest is the point of the Python port — the shell version
         # could not run there at all. pty-dependent tests self-skip.
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.9", "3.13"]
+        # 3.14 is here because the issue #3 reporter hit the bug on it —
+        # outside the range we otherwise test.
+        python: ["3.9", "3.13", "3.14"]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -22,9 +24,13 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python test.py
 
-  # Proves the published package actually runs after `npm i -g` — in
-  # particular that npm's Windows shim resolves the `python3` shebang, which
-  # is not guaranteed since python.org installers ship python.exe, not python3.
+  # Proves the published package actually runs after `npm i -g`. On Windows,
+  # interpreter resolution is done by bin/jackal.js itself, not by npm's
+  # generated shim — npm's shim just execs Node. The two regression steps
+  # below plant a fake python3.exe ahead of the real interpreter to reproduce
+  # the Microsoft Store app-execution-alias stub from issue #3: setup-python
+  # alone can't exercise this, since it puts a genuine python3.exe on PATH and
+  # so can never hit the shadowing bug in the first place.
   npm-install:
     strategy:
       fail-fast: false
@@ -51,6 +57,103 @@ jobs:
             exit 1
           }
           # jackal exits 1 by design here; don't let that fail the step.
+          exit 0
+
+      # The step above proves nothing about issue #3: setup-python puts a real
+      # python3.exe on PATH, so this job runs on a machine structurally
+      # incapable of reproducing the bug. Build a fake app-execution-alias
+      # stub and put it first on PATH instead. It must be a real, directly
+      # launchable .exe: Node's spawnSync (no shell:true) can't run a .bat/.cmd
+      # by itself, so a script stub would just fail to launch rather than
+      # reproducing the actual failure mode.
+      - name: build the fake app-execution-alias stub
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          if (-not (Test-Path $csc)) {
+            Write-Error "csc.exe not found at $csc; cannot build the fake stub"
+            exit 1
+          }
+
+          $stubDir = Join-Path $env:RUNNER_TEMP 'jackal-stub'
+          New-Item -ItemType Directory -Force -Path $stubDir | Out-Null
+          $srcPath = Join-Path $stubDir 'stub.cs'
+          $src = 'using System; class Stub { static int Main() { Console.Error.WriteLine("Python was not found; run without arguments to install from the Microsoft Store, or disable this shortcut from Settings > Manage App Execution Aliases."); return 9009; } }'
+          Set-Content -Path $srcPath -Value $src
+
+          & $csc /nologo "/out:$stubDir\python3.exe" $srcPath
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "failed to compile the fake python3 stub"
+            exit 1
+          }
+          exit 0
+
+      - name: "issue #3 regression: python3 alias stub must not block jackal"
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $stubDir = Join-Path $env:RUNNER_TEMP 'jackal-stub'
+
+          # Prepend the stub dir so it wins the PATH lookup, exactly like the
+          # Store alias wins on a real Windows box. Leave `python`/`py` alone
+          # so a real interpreter is still reachable further down PATH.
+          $env:Path = "$stubDir;$env:Path"
+
+          $resolved = (Get-Command python3 | Select-Object -First 1).Source
+          Write-Host "python3 resolves to: $resolved"
+          if ($resolved -ne "$stubDir\python3.exe") {
+            Write-Error "test setup is broken: stub is not first on PATH (got $resolved)"
+            exit 1
+          }
+
+          $out = (jackal 2>&1 | Out-String)
+          Write-Host "output: $out"
+          if ($out -notmatch 'need a terminal') {
+            Write-Error "jackal did not fall through the shadowed python3 to a real interpreter"
+            exit 1
+          }
+          exit 0
+
+      # The total-failure counterpart: shadow every candidate name jackal
+      # tries (python3, python, py) so none resolves to a real interpreter,
+      # and check jackal produces the Microsoft-Store-specific diagnostic
+      # issue #3 asked for, instead of a generic "not found" error.
+      - name: "issue #3 total failure: no usable interpreter anywhere on PATH"
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # A directory of its own, so shadowing all three names here cannot
+          # leak into the single-name step above whatever order they run in.
+          $stubDir = Join-Path $env:RUNNER_TEMP 'jackal-stub-none'
+          New-Item -ItemType Directory -Force -Path $stubDir | Out-Null
+          foreach ($name in 'python3', 'python', 'py') {
+            Copy-Item (Join-Path $env:RUNNER_TEMP 'jackal-stub\python3.exe') "$stubDir\$name.exe"
+          }
+
+          $env:Path = "$stubDir;$env:Path"
+
+          foreach ($name in 'python3', 'python', 'py') {
+            $resolved = (Get-Command $name | Select-Object -First 1).Source
+            Write-Host "$name resolves to: $resolved"
+            if ($resolved -ne "$stubDir\$name.exe") {
+              Write-Error "test setup is broken: $name is not shadowed by the stub (got $resolved)"
+              exit 1
+            }
+          }
+
+          $out = (jackal 2>&1 | Out-String)
+          $exit = $LASTEXITCODE
+          Write-Host "exit: $exit"
+          Write-Host "output: $out"
+          if ($exit -eq 0) {
+            Write-Error "jackal exited 0 with no usable interpreter available"
+            exit 1
+          }
+          if ($out -notmatch 'Microsoft Store') {
+            Write-Error "jackal's error did not name the Microsoft Store app execution alias"
+            exit 1
+          }
           exit 0
 
       - name: show the generated Windows shim

@@ -3,9 +3,10 @@
   "version": "0.2.0",
   "description": "Point Claude Code at a custom Anthropic-compatible endpoint (LiteLLM, a corporate AI gateway, any proxy) without touching your normal claude login.",
   "bin": {
-    "jackal": "jackal"
+    "jackal": "bin/jackal.js"
   },
   "files": [
+    "bin",
     "jackal",
     "README.md",
     "LICENSE"
