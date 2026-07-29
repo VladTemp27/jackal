@@ -98,6 +98,20 @@ class JackalTest(unittest.TestCase):
         self.cfg.write_text(f"ANTHROPIC_BASE_URL={url}\nANTHROPIC_AUTH_TOKEN={token}\n")
         self.cfg.chmod(0o600)
 
+    def seed_named(self, name, url, token):
+        """Write a new-format gateway file directly, bypassing interactive setup."""
+        gdir = self.home / ".jackal"
+        gdir.mkdir(exist_ok=True)
+        path = gdir / f"{name}.env"
+        path.write_text(f"ANTHROPIC_BASE_URL={url}\nANTHROPIC_AUTH_TOKEN={token}\n")
+        path.chmod(0o600)
+        return path
+
+    def set_current(self, name):
+        gdir = self.home / ".jackal"
+        gdir.mkdir(exist_ok=True)
+        (gdir / "current").write_text(name + "\n")
+
     def run_piped(self, *args, with_claude=True):
         """Run with stdout as a pipe — i.e. not a tty."""
         return subprocess.run(
@@ -171,18 +185,25 @@ class JackalTest(unittest.TestCase):
         self.assertTrue(JACKAL.read_text().startswith("#!"), "jackal needs a shebang")
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_bad_name_writes_nothing(self):
+        """A name that isn't safe as a filename component must be rejected."""
+        self.run_pty(inputs=["../evil"])
+        self.assertFalse((self.home / ".jackal").exists(), "no directory should be created")
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_bad_url_writes_nothing(self):
-        self.run_pty(inputs=["ftp://nope"])
-        self.assertFalse(self.cfg.exists(), "a rejected URL must not write a config")
+        self.run_pty(inputs=["work", "ftp://nope"])
+        self.assertFalse((self.home / ".jackal" / "work.env").exists())
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_intake_writes_0600_and_hides_token(self):
         out, _ = self.run_pty(
-            inputs=["https://gw.test", "tok_abc123"], args=["--version"]
+            inputs=["testgw", "https://gw.test", "tok_abc123"], args=["--version"]
         )
-        self.assertTrue(self.cfg.exists())
-        self.assertEqual(self.cfg.stat().st_mode & 0o777, 0o600)
-        body = self.cfg.read_text()
+        gw = self.home / ".jackal" / "testgw.env"
+        self.assertTrue(gw.exists())
+        self.assertEqual(gw.stat().st_mode & 0o777, 0o600)
+        body = gw.read_text()
         self.assertIn("ANTHROPIC_BASE_URL=https://gw.test", body)
         self.assertIn("tok_abc123", body)
         self.assertNotIn("tok_abc123", out, "token must never reach the screen")
@@ -190,14 +211,15 @@ class JackalTest(unittest.TestCase):
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_aborted_setup_preserves_config(self):
         """A failed reconfigure must not destroy working credentials."""
-        self.seed("https://keep.test", "tok_keep")
-        self.run_pty(inputs=["ftp://bad"], args=["--setup"])
-        self.assertIn("https://keep.test", self.cfg.read_text())
+        self.seed("https://keep.test", "tok_keep")  # old flat file, migrates to "default"
+        self.run_pty(inputs=["default", "ftp://bad"], args=["--setup"])
+        self.assertIn("https://keep.test", (self.home / ".jackal" / "default.env").read_text())
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_banner_on_tty_only(self):
-        self.seed("https://banner.test", "tok_b")
+        self.seed("https://banner.test", "tok_b")  # old flat file, migrates to "default"
         out, _ = self.run_pty(args=["-p", "hi"])
+        self.assertIn("default", out, "banner must name the active gateway")
         self.assertIn("banner.test", out)
         self.assertNotIn("tok_b", out, "banner must never print the token")
 
@@ -218,6 +240,37 @@ class JackalTest(unittest.TestCase):
         self.seed("https://x.test", "t")
         r = self.run_piped("-p", "hi", with_claude=False)
         self.assertIn("npm i -g @anthropic-ai/claude-code", r.stdout + r.stderr)
+
+    def test_migrates_old_flat_config(self):
+        self.seed("https://old.test", "tok_old")
+        self.run_piped("-p", "hi")
+        self.assertFalse((self.home / ".jackal.env").exists(), "old file must be moved, not copied")
+        gw = self.home / ".jackal" / "default.env"
+        self.assertTrue(gw.exists())
+        self.assertEqual(gw.stat().st_mode & 0o777, 0o600)
+        self.assertIn("https://old.test", gw.read_text())
+        self.assertEqual((self.home / ".jackal" / "current").read_text().strip(), "default")
+
+    def test_single_gateway_auto_used_without_default(self):
+        self.seed_named("work", "https://work.test", "tok_w")
+        r = self.run_piped("-p", "hi")
+        self.assertIn("url=[https://work.test]", r.stdout)
+
+    def test_stale_current_falls_back(self):
+        """A current file naming a gateway that no longer exists is treated as unset."""
+        self.seed_named("work", "https://work.test", "tok_w")
+        self.set_current("ghost")
+        r = self.run_piped("-p", "hi")
+        self.assertIn("url=[https://work.test]", r.stdout)
+
+    def test_ambiguous_default_errors_without_use(self):
+        self.seed_named("work", "https://work.test", "tok_w")
+        self.seed_named("personal", "https://personal.test", "tok_p")
+        r = self.run_piped("-p", "hi")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("jackal use", r.stdout + r.stderr)
+        self.assertIn("work", r.stdout + r.stderr)
+        self.assertIn("personal", r.stdout + r.stderr)
 
 
 if __name__ == "__main__":
