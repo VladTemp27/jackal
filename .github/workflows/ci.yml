@@ -50,6 +50,17 @@ jobs:
             Write-Error "shim did not reach jackal"
             exit 1
           }
+          # jackal exits 1 by design here; don't let that fail the step.
+          exit 0
+
+      - name: show the generated Windows shim
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $shim = (Get-Command jackal).Source
+          Write-Host "shim: $shim"
+          Get-Content $shim
+          exit 0
 
   lint:
     runs-on: ubuntu-latest
