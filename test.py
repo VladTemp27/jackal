@@ -82,8 +82,17 @@ class JackalTest(unittest.TestCase):
             return [os.path.join(root, "System32"), root]
         return ["/usr/bin", "/bin"]
 
-    def env(self, with_claude=True, update_check=False, update_url=None):
-        dirs = self._system_path()
+    def env(
+        self, with_claude=True, update_check=False, update_url=None, system_path=None
+    ):
+        if system_path is None:
+            dirs = self._system_path()
+        else:
+            dirs = (
+                list(system_path)
+                if isinstance(system_path, (list, tuple))
+                else [system_path]
+            )
         if with_claude:
             dirs.insert(0, str(self.home / "bin"))
         e = {
@@ -175,11 +184,23 @@ class JackalTest(unittest.TestCase):
             stub.chmod(0o755)
         return calls
 
-    def run_piped(self, *args, with_claude=True, update_check=False, update_url=None):
+    def run_piped(
+        self,
+        *args,
+        with_claude=True,
+        update_check=False,
+        update_url=None,
+        system_path=None,
+    ):
         """Run with stdout as a pipe — i.e. not a tty."""
         return subprocess.run(
             [sys.executable, str(JACKAL), *args],
-            env=self.env(with_claude, update_check=update_check, update_url=update_url),
+            env=self.env(
+                with_claude,
+                update_check=update_check,
+                update_url=update_url,
+                system_path=system_path,
+            ),
             capture_output=True,
             text=True,
             stdin=subprocess.DEVNULL,
@@ -198,7 +219,14 @@ class JackalTest(unittest.TestCase):
         except OSError:
             return None
 
-    def run_pty(self, inputs=(), args=(), update_check=False, update_url=None):
+    def run_pty(
+        self,
+        inputs=(),
+        args=(),
+        update_check=False,
+        update_url=None,
+        system_path=None,
+    ):
         """Drive jackal through a real terminal, answering each prompt.
 
         Waits for the Nth prompt glyph before sending line N. A fixed sleep
@@ -212,7 +240,11 @@ class JackalTest(unittest.TestCase):
             os.execve(
                 str(JACKAL),
                 [str(JACKAL), *args],
-                self.env(update_check=update_check, update_url=update_url),
+                self.env(
+                    update_check=update_check,
+                    update_url=update_url,
+                    system_path=system_path,
+                ),
             )
             os._exit(127)  # unreachable unless execve fails
         os.set_blocking(fd, False)
@@ -598,7 +630,17 @@ class JackalTest(unittest.TestCase):
     def test_missing_npm_suggests_manual_update(self):
         self.seed("https://x.test", "t")
         self.seed_update_cache(int(time.time()), latest=NEWER_VERSION)
-        out, _ = self.run_pty(inputs=["y"], args=["-p", "hi"], update_check=True)
+        # Create a minimal PATH with only python3 (via symlink), ensuring no real npm is found.
+        # This isolates the test from system npm installations without breaking env shebang resolution.
+        minimal_bin = self.home / "minimal_bin"
+        minimal_bin.mkdir()
+        (minimal_bin / "python3").symlink_to(sys.executable)
+        out, _ = self.run_pty(
+            inputs=["y"],
+            args=["-p", "hi"],
+            update_check=True,
+            system_path=[str(minimal_bin)],
+        )
         self.assertIn("npm i -g jackal-cli@latest", out)
         self.assertIn("CLAUDE args=", out)
 
