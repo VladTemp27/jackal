@@ -12,9 +12,11 @@ and `ANTHROPIC_AUTH_TOKEN` for one process, then `exec`ing `claude`. Your normal
 `claude` for subscription sessions — both work at the same time, in two
 terminals, with no switching step.
 
-Single-file Python script, no dependencies, MIT. First run prompts for the URL
-and token and writes them to `~/.jackal.env` at mode `0600`; every run after that
-reads that file and launches.
+Single-file Python script, no dependencies, MIT. It can save more than one
+named gateway: `jackal --setup` prompts for a name, a base URL, and a token,
+and writes them to `~/.jackal/<name>.env` at mode `0600`. Every run after that
+launches against the default gateway; switch it with `jackal use <name>`, or
+override for one run with `jackal --gateway <name>`.
 
 ## Install
 
@@ -38,14 +40,17 @@ npm link
 `npm link` symlinks `jackal` onto your PATH, so edits to the repo take effect
 immediately with no reinstall step.
 
-The first run prompts for the gateway URL and token:
+The first run prompts for a gateway name, base URL, and token:
 
 ```
   ╭────────────────────────────────────────╮
   │  jackal  ·  Claude via custom gateway  │
   ╰────────────────────────────────────────╯
 
-  writing to ~/.jackal.env
+  ▸ Gateway name
+    › work
+
+  writing to ~/.jackal/work.env
 
   ▸ Anthropic base URL
     › https://gw.example.com
@@ -53,20 +58,30 @@ The first run prompts for the gateway URL and token:
   ▸ Auth token   input hidden
     › 
 
-  ✓  saved ~/.jackal.env  (0600, 19 chars)
+  ✓  saved gateway "work"  (0600, 42 chars)
 ```
 
 ## Usage: running Claude Code through the gateway
 
-`jackal` takes the same arguments as `claude`. Everything except `--setup` and
-`--reconfigure` is forwarded unchanged, so any flag or subcommand `claude`
-accepts works.
+`jackal` takes the same arguments as `claude`. Everything except `--setup` /
+`--reconfigure`, `use`, `--list`, `--remove`, and `--gateway` is passed straight
+through to `claude`, so any flag or subcommand it accepts works.
 
 ```sh
-jackal                  # first run prompts for URL + token, then launches
-jackal -p "hello"       # arguments forward to claude untouched
-jackal --setup          # change the URL/token later (--reconfigure also works)
+jackal                       # launches against the default gateway
+jackal -p "hello"            # all arguments forward to claude untouched
+jackal --setup                # add a new gateway or edit an existing one (prompts for its name)
+jackal use work               # switch the default gateway to "work"
+jackal --gateway work -p "hi" # one-off launch against "work" without changing the default
+jackal --list                 # show saved gateways, marking the default
+jackal --remove work          # delete a saved gateway
 ```
+
+The first gateway you set up automatically becomes the default. Adding more
+gateways with `jackal --setup` never changes an *already-set* default on its
+own — switch it explicitly with `jackal use <name>`. If you only ever save one gateway,
+`jackal` just uses it; if you save more than one and never pick a default,
+`jackal` refuses to guess and tells you to run `jackal use <name>`.
 
 ## Your normal `claude` login is untouched
 
@@ -120,6 +135,11 @@ and carries no traffic.
 
 ## How it works: `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`
 
+Gateways are stored one-per-file under `~/.jackal/<name>.env` (same `0600`
+permissions as before), with `~/.jackal/current` naming the default. A
+pre-existing `~/.jackal.env` from an older version of jackal is migrated
+automatically, once, into a gateway named `default`.
+
 Two environment variables, set for one process only:
 
 | Variable | Purpose |
@@ -142,7 +162,8 @@ process, and your stored login is never read or written.
 
 ### Does it edit `~/.claude/settings.json` or my shell rc?
 
-No. The only file `jackal` writes is `~/.jackal.env`.
+No. The only files `jackal` writes are under `~/.jackal/` — one `.env` file
+per saved gateway, plus a `current` file naming the default.
 
 ### `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`?
 
@@ -153,10 +174,11 @@ expect. A gateway that wants an `x-api-key` header instead needs
 
 ### Does it work non-interactively — CI, cron, an agent runner?
 
-Once configured, yes: with `~/.jackal.env` already present nothing prompts, and
-the banner is skipped when stdout is not a tty. The *first* run needs a real
-terminal and exits rather than blocking. In CI, set the two variables directly —
-`jackal` is a convenience for humans, not a dependency.
+Once a gateway is configured, yes: with a default gateway already saved under
+`~/.jackal/` nothing prompts, and the banner is skipped when stdout is not a
+tty. The *first* run needs a real terminal and exits rather than blocking. In
+CI, set the two variables directly — `jackal` is a convenience for humans, not
+a dependency.
 
 ### Can I use it with Amazon Bedrock or Google Vertex?
 
@@ -183,23 +205,23 @@ exists, no change to how `claude` behaves the rest of the time.
 `jackal` prints a one-line banner naming the active gateway before handing off:
 
 ```
-  ◆ jackal · gateway gw.example.com
+  ◆ jackal · gateway work · gw.example.com
 ```
 
 Claude Code renders inline — no alt-screen, no clear-screen — so the banner
-survives above its welcome box rather than being wiped. It shows the **host
-only**, never the token, and is skipped when stdout is not a tty so
-`jackal -p "..." > file` stays clean.
+survives above its welcome box rather than being wiped. It shows the
+gateway's **name and host**, never the token, and is skipped when stdout is
+not a tty so `jackal -p "..." > file` stays clean.
 
 ## Uninstall
 
 ```sh
 npm un -g jackal-cli    # remove the command
-rm ~/.jackal.env        # remove the stored gateway URL and token
+rm -rf ~/.jackal        # remove every stored gateway URL and token
 ```
 
-`npm un` removes the binary but leaves `~/.jackal.env` behind — it holds a live
-credential, so delete it explicitly if you're done with the gateway. If you
+`npm un` removes the binary but leaves `~/.jackal/` behind — it holds live
+credentials, so delete it explicitly if you're done with the gateways. If you
 installed from source, `npm unlink -g jackal-cli` instead.
 
 ## Tests
@@ -277,10 +299,13 @@ Copy-Item (Get-Command python).Source (Join-Path (Split-Path (Get-Command python
 
 | Message | Cause |
 |---|---|
-| `jackal: need a terminal to configure` (followed by the absolute path to `.jackal.env`) | No config file yet, and no controlling terminal — cron, CI, or stdin redirected from `NUL`/`DEVNULL`. Run `jackal --setup` once from a real terminal. |
+| `jackal: need a terminal to configure a gateway` | No gateway saved yet, and no controlling terminal — cron, CI, or stdin redirected from `NUL`/`DEVNULL`. Run `jackal --setup` once from a real terminal. |
 | `jackal: Claude Code not found (looked for '...')` | `claude` is not on `PATH` and not at `~/.local/bin/claude`. Install with `npm i -g @anthropic-ai/claude-code`. |
+| `gateway name must be non-empty and only letters, digits, - or _ — nothing saved` | Invalid gateway name at the `--setup` prompt. |
 | `URL must start with http:// or https:// — nothing saved` | Base URL entered without a scheme. `gw.example.com` is rejected; `https://gw.example.com` is accepted. |
 | `token required — nothing saved` | Empty token at the prompt. Nothing is written; any previous config is left intact. |
+| `jackal: no gateway named '<name>' — see jackal --list` | `use`, `--gateway`, or `--remove` named a gateway that isn't saved. |
+| `` jackal: multiple gateways saved, no default set — run `jackal use <name>` `` | Bare `jackal` with 2+ saved gateways and no default — run `jackal use <name>` to pick one. |
 
 ### Other known limits
 
@@ -300,9 +325,9 @@ enough traction to justify it, a formula is about fifteen lines.
 
 ## Security
 
-`~/.jackal.env` holds a live credential in plaintext at `0600`. It lives outside
-the repo and `.gitignore` blocks `*.env` as a second line of defence, but it is
-still a file on disk — treat it like an SSH key.
+`~/.jackal/` holds live credentials in plaintext at `0600`. It lives outside
+the repo and `.gitignore` blocks `*.env` as a second line of defence, but they are
+still files on disk — treat them like SSH keys.
 
 Pointing `ANTHROPIC_BASE_URL` at a gateway routes every prompt, file, and diff
 through whoever operates it. Fine for your own or your employer's infrastructure;

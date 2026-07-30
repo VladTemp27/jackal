@@ -1,8 +1,11 @@
-# Never commit credentials. jackal keeps them in ~/.jackal.env (outside the
+# Never commit credentials. jackal keeps them under ~/.jackal/ (outside the
 # repo), but this guards against a stray copy landing here.
 *.env
-.jackal.env
 
 # Python
 __pycache__/
 *.py[cod]
+
+# Subagent-driven-development scratch workspace (ledgers, briefs, reports)
+.superpowers/
+*/superpowers/
