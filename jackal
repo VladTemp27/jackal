@@ -357,12 +357,18 @@ def _prompt_update(tty_in, tty_out, cache, latest):
 def maybe_check_for_update():
     """Print a one-line notice and offer to update when a newer jackal-cli exists.
 
-    A complete no-op — no network call, no output, no prompt — unless
-    there's a real interactive terminal (the same open_tty() run_setup
-    already relies on) and JACKAL_NO_UPDATE_CHECK is unset. Piped, scripted,
-    and CI use are unaffected either way.
+    A complete no-op — no network call, no output, no prompt — unless stdout
+    is a real terminal (the same check banner() uses, so `jackal -p "..." >
+    file` stays silent and non-interactive even when a controlling terminal
+    is still attached) and there's a controlling terminal to read/write the
+    prompt on (the open_tty() run_setup already relies on), and
+    JACKAL_NO_UPDATE_CHECK is unset. Piped, scripted, and CI use are
+    unaffected either way. Best-effort only: any failure here is swallowed
+    so a flaky cache or hostile registry can never block a launch.
     """
     if os.environ.get("JACKAL_NO_UPDATE_CHECK"):
+        return
+    if not sys.stdout.isatty():
         return
     tty_in, tty_out = open_tty()
     if tty_in is None:
@@ -380,10 +386,7 @@ def maybe_check_for_update():
         latest = cache.get("latest")
         if not latest or latest == cache.get("declined"):
             return
-        try:
-            newer = _version_tuple(latest) > _version_tuple(current_version())
-        except ValueError:
-            return
+        newer = _version_tuple(latest) > _version_tuple(current_version())
         if not newer:
             return
 
@@ -394,6 +397,8 @@ def maybe_check_for_update():
         )
         tty_out.flush()
         _prompt_update(tty_in, tty_out, cache, latest)
+    except Exception:  # noqa: BLE001 — cosmetic check, must never break a launch
+        return
     finally:
         tty_in.close()
         if tty_out is not tty_in:

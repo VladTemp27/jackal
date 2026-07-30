@@ -551,17 +551,27 @@ class JackalTest(unittest.TestCase):
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_update_notice_shown_for_newer_cached_version(self):
         self.seed("https://x.test", "t")
-        self.seed_update_cache(int(time.time()), latest=NEWER_VERSION)
-        out, _ = self.run_pty(inputs=["n"], args=["-p", "hi"], update_check=True)
+        checked_at = int(time.time())
+        self.seed_update_cache(checked_at, latest=NEWER_VERSION)
+        out, _ = self.run_pty(
+            inputs=["n"], args=["-p", "hi"], update_check=True, update_url=DEAD_URL
+        )
         self.assertIn("update available", out)
         self.assertIn(CURRENT_VERSION, out)
         self.assertIn(NEWER_VERSION, out)
+        # Declining adds a "declined" key, but checked_at/latest — the only
+        # fields a live fetch would touch — must be untouched: proof the
+        # fresh cache short-circuited the fetch branch, no registry call
+        # was attempted within the 24h window.
+        cache = json.loads((self.home / ".jackal" / "update-check.json").read_text())
+        self.assertEqual(cache["checked_at"], checked_at)
+        self.assertEqual(cache["latest"], NEWER_VERSION)
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_update_notice_hidden_when_already_current(self):
         self.seed("https://x.test", "t")
         self.seed_update_cache(int(time.time()), latest=CURRENT_VERSION)
-        out, _ = self.run_pty(args=["-p", "hi"], update_check=True)
+        out, _ = self.run_pty(args=["-p", "hi"], update_check=True, update_url=DEAD_URL)
         self.assertNotIn("update available", out)
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
@@ -570,7 +580,7 @@ class JackalTest(unittest.TestCase):
         self.seed_update_cache(
             int(time.time()), latest=NEWER_VERSION, declined=NEWER_VERSION
         )
-        out, _ = self.run_pty(args=["-p", "hi"], update_check=True)
+        out, _ = self.run_pty(args=["-p", "hi"], update_check=True, update_url=DEAD_URL)
         self.assertNotIn("update available", out)
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
@@ -610,7 +620,12 @@ class JackalTest(unittest.TestCase):
         self.seed("https://x.test", "t")
         self.seed_update_cache(int(time.time()), latest=NEWER_VERSION)
         calls = self.write_npm_stub()
-        out, _ = self.run_pty(inputs=["y"], args=["-p", "hi"], update_check=True)
+        out, _ = self.run_pty(
+            inputs=["y"],
+            args=["-p", "hi"],
+            update_check=True,
+            update_url=DEAD_URL,
+        )
         self.assertIn("i -g jackal-cli@latest", calls.read_text())
         self.assertIn("updated to " + NEWER_VERSION, out)
         self.assertIn("CLAUDE args=", out)
@@ -620,7 +635,9 @@ class JackalTest(unittest.TestCase):
         self.seed("https://x.test", "t")
         self.seed_update_cache(int(time.time()), latest=NEWER_VERSION)
         calls_path = self.home / "npm_calls.txt"
-        out, _ = self.run_pty(inputs=["n"], args=["-p", "hi"], update_check=True)
+        out, _ = self.run_pty(
+            inputs=["n"], args=["-p", "hi"], update_check=True, update_url=DEAD_URL
+        )
         self.assertFalse(calls_path.exists(), "npm must not run when the user declines")
         self.assertIn("CLAUDE args=", out)
         cache = json.loads((self.home / ".jackal" / "update-check.json").read_text())
@@ -639,6 +656,7 @@ class JackalTest(unittest.TestCase):
             inputs=["y"],
             args=["-p", "hi"],
             update_check=True,
+            update_url=DEAD_URL,
             system_path=[str(minimal_bin)],
         )
         self.assertIn("npm i -g jackal-cli@latest", out)
@@ -649,7 +667,9 @@ class JackalTest(unittest.TestCase):
         self.seed("https://x.test", "t")
         self.seed_update_cache(int(time.time()), latest=NEWER_VERSION)
         self.write_npm_stub(exit_code=1)
-        out, _ = self.run_pty(inputs=["y"], args=["-p", "hi"], update_check=True)
+        out, _ = self.run_pty(
+            inputs=["y"], args=["-p", "hi"], update_check=True, update_url=DEAD_URL
+        )
         self.assertIn("update failed", out)
         self.assertIn("CLAUDE args=", out)
 
