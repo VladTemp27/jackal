@@ -17,11 +17,24 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 JACKAL = HERE / "jackal"
+LAUNCHER = HERE / "bin" / "jackal.js"
 PROMPT = "›".encode()
 POSIX = os.name != "nt"
+NODE = shutil.which("node")
 
 if POSIX:
     import pty
+
+# Fake interpreter bodies for the bin/jackal.js launcher tests below (POSIX
+# only — see the skip note on those tests for why). Plain Python, run via a
+# `#!{sys.executable}` shebang, so the same source doubles as the file itself.
+STORE_STUB_BODY = (
+    "import sys\n"
+    'sys.stdout.write("Python was not found; run without arguments to install'
+    ' from the Microsoft Store.\\n")\n'
+    "sys.exit(7)\n"  # any non-zero code — never assert on the literal 9009
+)
+SILENT_OK_BODY = "import sys\nsys.exit(0)\n"  # exits clean, proves nothing
 
 
 class JackalTest(unittest.TestCase):
@@ -65,6 +78,56 @@ class JackalTest(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     # -- helpers ----------------------------------------------------------
+
+    @staticmethod
+    def _write_py_stub(bindir, name, body):
+        """A fake `name` interpreter that runs `body`, ignoring its own argv.
+
+        Good enough to answer the launcher's `-c PROBE` probe — it never
+        needs to actually execute an arbitrary script in these tests, since
+        a stub that fails the probe is never invoked a second time.
+
+        POSIX only: bin/jackal.js calls spawnSync without `shell: true` (on
+        purpose — it also passes user arguments, and shell:true there would
+        be an injection hazard), and Node cannot exec a .bat/.cmd directly
+        without a shell; it raises EINVAL instead of running it. A `.cmd`
+        fake here would fail for that reason, not because it's a rejected
+        stub, which proves nothing. See the skip note on the tests below.
+        """
+        stub = bindir / name
+        stub.write_text(f"#!{sys.executable}\n{body}")
+        stub.chmod(0o755)
+
+    @staticmethod
+    def _write_real_interpreter(bindir, name):
+        """A genuinely working `name` interpreter: forwards to the real
+        Python running this test, so the launcher's sentinel probe passes
+        and it can go on to actually execute `jackal`. POSIX only, for the
+        same reason as _write_py_stub — a Windows equivalent would need to
+        be a real .exe, not a .cmd.
+        """
+        (bindir / name).symlink_to(sys.executable)
+
+    def _shadow_all_candidates(self, bindir, body):
+        """Shadow python3/python/py with a rejectable stub.
+
+        Needed for the "no usable interpreter" tests: some machines have a
+        real `py` (or `python`) sitting on PATH already, which would
+        otherwise make the launcher succeed for real and defeat the test.
+        """
+        for name in ("python3", "python", "py"):
+            self._write_py_stub(bindir, name, body)
+
+    def _set_claude_exit_code(self, code):
+        """Overwrite the setUp-installed `claude` stub to just exit(code)."""
+        bindir = self.home / "bin"
+        body = f"import sys\nsys.exit({code})\n"
+        if os.name == "nt":
+            (bindir / "claude_stub.py").write_text(body)
+        else:
+            stub = bindir / "claude"
+            stub.write_text(f"#!{sys.executable}\n{body}")
+            stub.chmod(0o755)
 
     @staticmethod
     def _system_path():
@@ -122,6 +185,18 @@ class JackalTest(unittest.TestCase):
             stdin=subprocess.DEVNULL,
             check=False,
             timeout=60,  # a prompt that blocks should fail the suite, not stall CI
+        )
+
+    def run_launcher(self, *args):
+        """Run bin/jackal.js the way npm's shim would: `jackal <args>`."""
+        return subprocess.run(
+            [NODE, str(LAUNCHER), *args],
+            env=self.env(),
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            check=False,
+            timeout=60,
         )
 
     @staticmethod
@@ -448,6 +523,88 @@ class JackalTest(unittest.TestCase):
         )
         r = self.run_piped("--gateway", "../victim", "-p", "hi")
         self.assertNotEqual(r.returncode, 0)
+
+    # -- bin/jackal.js (the npm launcher) ----------------------------------
+    #
+    # npm's Windows cmd-shim generator used to copy the shebang interpreter
+    # name (`python3`) verbatim and do a bare PATH lookup for it — which the
+    # Microsoft Store's app-execution-alias stub shadows. bin/jackal.js
+    # replaces that with its own probe. These tests drive the real launcher
+    # through `node`, with fake interpreters standing in for the stub, a
+    # working Python, and a Python-shaped no-op — never the tester's own
+    # Python resolution, so the outcome doesn't depend on what's installed.
+    #
+    # POSIX only. The fakes below are plain files with a `#!interpreter`
+    # shebang; Node's spawnSync (no `shell: true`, deliberately, to avoid an
+    # argument-injection hazard on the real run) cannot execute a Windows
+    # .bat/.cmd the same way — it raises EINVAL rather than running it, so a
+    # `.cmd` stand-in would fail the probe for the wrong reason and prove
+    # nothing about the launcher's stub-detection logic. Getting a real fake
+    # interpreter on Windows needs an actual compiled .exe; the Windows leg
+    # of CI covers that separately with a genuine npm-installed shim instead.
+    WINDOWS_SKIP_REASON = (
+        "Windows fakes would need a compiled .exe: spawnSync without "
+        "shell:true raises EINVAL on a .cmd, not the behavior under test — "
+        "covered separately in CI"
+    )
+
+    @unittest.skipUnless(NODE, "node not on PATH")
+    @unittest.skipIf(os.name == "nt", WINDOWS_SKIP_REASON)
+    def test_launcher_propagates_nonzero_exit_from_child(self):
+        """A real interpreter on PATH: the exit code jackal (via claude)
+        produces must come back unchanged, not swallowed or replaced."""
+        self.seed("https://gw.test", "tok")
+        self._write_real_interpreter(self.home / "bin", "python3")
+        self._set_claude_exit_code(17)
+        r = self.run_launcher("-p", "hi")
+        self.assertEqual(r.returncode, 17)
+
+    @unittest.skipUnless(NODE, "node not on PATH")
+    @unittest.skipIf(os.name == "nt", WINDOWS_SKIP_REASON)
+    def test_launcher_skips_store_stub_and_uses_next_candidate(self):
+        """`python3` resolves to the Store alias stub; the launcher must
+        recognize it, not accept it, and fall through to `python`."""
+        self.seed("https://gw.test", "tok")
+        bindir = self.home / "bin"
+        self._write_py_stub(bindir, "python3", STORE_STUB_BODY)
+        self._write_real_interpreter(bindir, "python")
+        self._set_claude_exit_code(0)
+        r = self.run_launcher("-p", "hi")
+        combined = r.stdout + r.stderr
+        # Wrongly accepting the stub would re-invoke it for the real run too,
+        # printing its message and exiting with its (non-zero) code — the
+        # opposite of what a working fallback to `python` looks like.
+        self.assertEqual(r.returncode, 0, combined)
+        self.assertNotIn("Microsoft Store", combined)
+
+    @unittest.skipUnless(NODE, "node not on PATH")
+    @unittest.skipIf(os.name == "nt", WINDOWS_SKIP_REASON)
+    def test_launcher_reports_store_alias_hint_when_stub_seen(self):
+        """No candidate works and a Store stub was seen along the way:
+        exit 1, pointing at the app-execution-alias setting, not a
+        generic "go install Python" message."""
+        bindir = self.home / "bin"
+        self._shadow_all_candidates(bindir, STORE_STUB_BODY)
+        r = self.run_launcher()
+        combined = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Microsoft Store", combined)
+        self.assertIn("execution alias", combined.lower())
+
+    @unittest.skipUnless(NODE, "node not on PATH")
+    @unittest.skipIf(os.name == "nt", WINDOWS_SKIP_REASON)
+    def test_launcher_rejects_silent_exit_and_reports_plain_install_message(self):
+        """A candidate that exits 0 without ever printing the sentinel must
+        not be trusted on exit code alone. With nothing else usable, the
+        launcher must still fail outright — and since no stub was ever
+        seen, point at the plain python.org link instead of the Store."""
+        bindir = self.home / "bin"
+        self._shadow_all_candidates(bindir, SILENT_OK_BODY)
+        r = self.run_launcher()
+        combined = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("Microsoft Store", combined)
+        self.assertIn("python.org", combined)
 
 
 if __name__ == "__main__":
