@@ -1,7 +1,7 @@
 {
   "name": "jackal-cli",
   "version": "0.1.0",
-  "description": "Launch Claude Code against a custom Anthropic gateway, without disturbing your normal claude",
+  "description": "Point Claude Code at a custom Anthropic-compatible endpoint (LiteLLM, a corporate AI gateway, any proxy) without touching your normal claude login.",
   "bin": {
     "jackal": "jackal"
   },
@@ -13,12 +13,22 @@
   "keywords": [
     "claude",
     "claude-code",
+    "claude-code-cli",
     "anthropic",
+    "anthropic-api",
+    "anthropic-base-url",
     "gateway",
+    "ai-gateway",
+    "llm-gateway",
     "proxy",
+    "custom-endpoint",
+    "base-url",
+    "litellm",
     "cli",
     "wrapper",
-    "python"
+    "python",
+    "zero-dependencies",
+    "cross-platform"
   ],
   "license": "MIT",
   "repository": {
