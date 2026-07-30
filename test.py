@@ -6,11 +6,14 @@ preservation, and output cleanliness. Every test uses a throwaway $HOME and a
 stub `claude`, so it never touches your real config or reaches any gateway.
 """
 
+import http.server
+import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -19,6 +22,11 @@ HERE = Path(__file__).resolve().parent
 JACKAL = HERE / "jackal"
 PROMPT = "›".encode()
 POSIX = os.name != "nt"
+
+CURRENT_VERSION = json.loads((HERE / "package.json").read_text())["version"]
+_parts = [int(p) for p in CURRENT_VERSION.split(".")]
+NEWER_VERSION = ".".join(str(p) for p in _parts[:-1] + [_parts[-1] + 1])
+DEAD_URL = "http://127.0.0.1:1/"  # nothing listens here — connection refused fast
 
 if POSIX:
     import pty
@@ -74,7 +82,7 @@ class JackalTest(unittest.TestCase):
             return [os.path.join(root, "System32"), root]
         return ["/usr/bin", "/bin"]
 
-    def env(self, with_claude=True):
+    def env(self, with_claude=True, update_check=False, update_url=None):
         dirs = self._system_path()
         if with_claude:
             dirs.insert(0, str(self.home / "bin"))
@@ -83,6 +91,12 @@ class JackalTest(unittest.TestCase):
             "PATH": os.pathsep.join(dirs),
             "TERM": "xterm-256color",
         }
+        if not update_check:
+            # Tests that don't care about the update-check feature must never
+            # reach the real npm registry.
+            e["JACKAL_NO_UPDATE_CHECK"] = "1"
+        if update_url:
+            e["JACKAL_UPDATE_URL"] = update_url
         if os.name == "nt":
             # Path.home() reads USERPROFILE on Windows, not HOME. And Windows
             # Python cannot even start without SYSTEMROOT — it needs the crypto
@@ -112,11 +126,60 @@ class JackalTest(unittest.TestCase):
         gdir.mkdir(exist_ok=True)
         (gdir / "current").write_text(name + "\n")
 
-    def run_piped(self, *args, with_claude=True):
+    def seed_update_cache(self, checked_at, latest=None, declined=None):
+        gdir = self.home / ".jackal"
+        gdir.mkdir(exist_ok=True)
+        data = {"checked_at": checked_at}
+        if latest is not None:
+            data["latest"] = latest
+        if declined is not None:
+            data["declined"] = declined
+        (gdir / "update-check.json").write_text(json.dumps(data))
+
+    def start_fake_registry(self, version):
+        """A throwaway HTTP server serving {"version": version}; returns its base URL."""
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = json.dumps({"version": version}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_port}/"
+
+    def write_npm_stub(self, exit_code=0):
+        """A fake `npm` that records its argv to npm_calls.txt and exits with exit_code."""
+        bindir = self.home / "bin"
+        calls = self.home / "npm_calls.txt"
+        body = (
+            "import sys\n"
+            f"open({str(calls)!r}, 'a').write(' '.join(sys.argv[1:]) + chr(10))\n"
+            f"sys.exit({exit_code})\n"
+        )
+        if os.name == "nt":
+            (bindir / "npm_stub.py").write_text(body)
+            (bindir / "npm.cmd").write_text(
+                f'@echo off\r\n"{sys.executable}" "%~dp0npm_stub.py" %*\r\n'
+            )
+        else:
+            stub = bindir / "npm"
+            stub.write_text(f"#!{sys.executable}\n{body}")
+            stub.chmod(0o755)
+        return calls
+
+    def run_piped(self, *args, with_claude=True, update_check=False, update_url=None):
         """Run with stdout as a pipe — i.e. not a tty."""
         return subprocess.run(
             [sys.executable, str(JACKAL), *args],
-            env=self.env(with_claude),
+            env=self.env(with_claude, update_check=update_check, update_url=update_url),
             capture_output=True,
             text=True,
             stdin=subprocess.DEVNULL,
@@ -135,7 +198,7 @@ class JackalTest(unittest.TestCase):
         except OSError:
             return None
 
-    def run_pty(self, inputs=(), args=()):
+    def run_pty(self, inputs=(), args=(), update_check=False, update_url=None):
         """Drive jackal through a real terminal, answering each prompt.
 
         Waits for the Nth prompt glyph before sending line N. A fixed sleep
@@ -146,7 +209,11 @@ class JackalTest(unittest.TestCase):
         """
         pid, fd = pty.fork()
         if pid == 0:
-            os.execve(str(JACKAL), [str(JACKAL), *args], self.env())
+            os.execve(
+                str(JACKAL),
+                [str(JACKAL), *args],
+                self.env(update_check=update_check, update_url=update_url),
+            )
             os._exit(127)  # unreachable unless execve fails
         os.set_blocking(fd, False)
         buf = b""
@@ -448,6 +515,101 @@ class JackalTest(unittest.TestCase):
         )
         r = self.run_piped("--gateway", "../victim", "-p", "hi")
         self.assertNotEqual(r.returncode, 0)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_update_notice_shown_for_newer_cached_version(self):
+        self.seed("https://x.test", "t")
+        self.seed_update_cache(int(time.time()), latest=NEWER_VERSION)
+        out, _ = self.run_pty(inputs=["n"], args=["-p", "hi"], update_check=True)
+        self.assertIn("update available", out)
+        self.assertIn(CURRENT_VERSION, out)
+        self.assertIn(NEWER_VERSION, out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_update_notice_hidden_when_already_current(self):
+        self.seed("https://x.test", "t")
+        self.seed_update_cache(int(time.time()), latest=CURRENT_VERSION)
+        out, _ = self.run_pty(args=["-p", "hi"], update_check=True)
+        self.assertNotIn("update available", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_update_notice_hidden_for_declined_version(self):
+        self.seed("https://x.test", "t")
+        self.seed_update_cache(
+            int(time.time()), latest=NEWER_VERSION, declined=NEWER_VERSION
+        )
+        out, _ = self.run_pty(args=["-p", "hi"], update_check=True)
+        self.assertNotIn("update available", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_stale_cache_refreshes_from_registry(self):
+        self.seed("https://x.test", "t")
+        url = self.start_fake_registry(NEWER_VERSION)
+        self.run_pty(inputs=["n"], args=["-p", "hi"], update_check=True, update_url=url)
+        cache = json.loads((self.home / ".jackal" / "update-check.json").read_text())
+        self.assertEqual(cache["latest"], NEWER_VERSION)
+        self.assertGreater(cache["checked_at"], 0)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_unreachable_registry_does_not_break_launch(self):
+        self.seed("https://x.test", "t")
+        out, _ = self.run_pty(args=["-p", "hi"], update_check=True, update_url=DEAD_URL)
+        self.assertIn("CLAUDE args=", out)
+        cache = json.loads((self.home / ".jackal" / "update-check.json").read_text())
+        self.assertNotIn("latest", cache)
+        self.assertGreater(cache["checked_at"], 0)
+
+    def test_no_tty_never_touches_network(self):
+        """A piped run with no cache must not attempt any network call."""
+        self.seed("https://x.test", "t")
+        r = self.run_piped("-p", "hi", update_check=True, update_url=DEAD_URL)
+        self.assertIn("CLAUDE args=", r.stdout)
+        self.assertFalse((self.home / ".jackal" / "update-check.json").exists())
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_no_update_check_env_var_disables_notice(self):
+        self.seed("https://x.test", "t")
+        self.seed_update_cache(int(time.time()), latest=NEWER_VERSION)
+        out, _ = self.run_pty(args=["-p", "hi"])  # update_check=False (default)
+        self.assertNotIn("update available", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_answering_y_runs_npm_and_still_launches_claude(self):
+        self.seed("https://x.test", "t")
+        self.seed_update_cache(int(time.time()), latest=NEWER_VERSION)
+        calls = self.write_npm_stub()
+        out, _ = self.run_pty(inputs=["y"], args=["-p", "hi"], update_check=True)
+        self.assertIn("i -g jackal-cli@latest", calls.read_text())
+        self.assertIn("updated to " + NEWER_VERSION, out)
+        self.assertIn("CLAUDE args=", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_answering_n_declines_and_still_launches_claude(self):
+        self.seed("https://x.test", "t")
+        self.seed_update_cache(int(time.time()), latest=NEWER_VERSION)
+        calls_path = self.home / "npm_calls.txt"
+        out, _ = self.run_pty(inputs=["n"], args=["-p", "hi"], update_check=True)
+        self.assertFalse(calls_path.exists(), "npm must not run when the user declines")
+        self.assertIn("CLAUDE args=", out)
+        cache = json.loads((self.home / ".jackal" / "update-check.json").read_text())
+        self.assertEqual(cache["declined"], NEWER_VERSION)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_missing_npm_suggests_manual_update(self):
+        self.seed("https://x.test", "t")
+        self.seed_update_cache(int(time.time()), latest=NEWER_VERSION)
+        out, _ = self.run_pty(inputs=["y"], args=["-p", "hi"], update_check=True)
+        self.assertIn("npm i -g jackal-cli@latest", out)
+        self.assertIn("CLAUDE args=", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_npm_failure_reports_error_and_still_launches(self):
+        self.seed("https://x.test", "t")
+        self.seed_update_cache(int(time.time()), latest=NEWER_VERSION)
+        self.write_npm_stub(exit_code=1)
+        out, _ = self.run_pty(inputs=["y"], args=["-p", "hi"], update_check=True)
+        self.assertIn("update failed", out)
+        self.assertIn("CLAUDE args=", out)
 
 
 if __name__ == "__main__":
