@@ -163,7 +163,16 @@ process, and your stored login is never read or written.
 ### Does it edit `~/.claude/settings.json` or my shell rc?
 
 No. The only files `jackal` writes are under `~/.jackal/` — one `.env` file
-per saved gateway, plus a `current` file naming the default.
+per saved gateway, a `current` file naming the default, and a small
+`update-check.json` cache (see [Updates](#updates)).
+
+### Does `jackal` ever phone home?
+
+Only for the update check above, and only when stdout is a real terminal:
+once a day at most, it asks `registry.npmjs.org` for the latest published
+`jackal-cli` version. No gateway URL, token, or usage data is ever sent —
+just that one GET request. Set `JACKAL_NO_UPDATE_CHECK=1` to turn it off
+completely.
 
 ### `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`?
 
@@ -212,6 +221,25 @@ Claude Code renders inline — no alt-screen, no clear-screen — so the banner
 survives above its welcome box rather than being wiped. It shows the
 gateway's **name and host**, never the token, and is skipped when stdout is
 not a tty so `jackal -p "..." > file` stays clean.
+
+## Updates
+
+On an interactive launch, `jackal` checks npm for a newer `jackal-cli` at
+most once every 24 hours (cached under `~/.jackal/update-check.json`) and,
+if one exists, shows:
+
+```
+  ↑ update available (0.2.0 → 0.3.0)
+  update now? [y/N]
+    ›
+```
+
+Answering `y` runs `npm i -g jackal-cli@latest` and reports success or
+failure; anything else skips that specific version without asking again
+until a newer one ships. Like the banner, this is skipped entirely — no
+network call, no output — whenever stdout isn't a tty, so piped, scripted,
+and CI use are unaffected. Set `JACKAL_NO_UPDATE_CHECK=1` to disable it
+outright.
 
 ## Uninstall
 
