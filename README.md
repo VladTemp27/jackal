@@ -12,9 +12,9 @@ and `ANTHROPIC_AUTH_TOKEN` for one process, then `exec`ing `claude`. Your normal
 `claude` for subscription sessions — both work at the same time, in two
 terminals, with no switching step.
 
-Single-file Python script, no dependencies, MIT. It can save more than one
-named gateway: `jackal --setup` prompts for a name, a base URL, and a token,
-and writes them to `~/.jackal/<name>.env` at mode `0600`. Every run after that
+Pure-stdlib Python, no dependencies, MIT. It can save more than one
+named gateway: `jackal --setup` prompts for a name, a base URL, a token, and a
+model, and writes them to `~/.jackal/<name>.env` at mode `0600`. Every run after that
 launches against the default gateway; switch it with `jackal use <name>`, or
 override for one run with `jackal --gateway <name>`.
 
@@ -40,7 +40,8 @@ npm link
 `npm link` symlinks `jackal` onto your PATH, so edits to the repo take effect
 immediately with no reinstall step.
 
-The first run prompts for a gateway name, base URL, and token:
+The first run prompts for a gateway name, base URL, and token, then offers the
+models the gateway reports:
 
 ```
   ╭────────────────────────────────────────╮
@@ -58,8 +59,19 @@ The first run prompts for a gateway name, base URL, and token:
   ▸ Auth token   input hidden
     › 
 
+  ▸ Launch model   3 from gateway
+     1  Claude Opus 4.6     claude-opus-4-6
+     2  Claude Sonnet 4.6   claude-sonnet-4-6
+     3  Claude Haiku 4.5    claude-haiku-4-5
+    number, model id, or blank to skip
+    › 1
+
   ✓  saved gateway "work"  (0600, 42 chars)
+     launch model claude-opus-4-6
 ```
+
+The model prompt is skippable and appears only if the gateway answers
+`GET /v1/models` — see [Choosing a model at setup](#choosing-a-model-at-setup).
 
 ## Usage: running Claude Code through the gateway
 
@@ -68,9 +80,9 @@ The first run prompts for a gateway name, base URL, and token:
 through to `claude`, so any flag or subcommand it accepts works.
 
 ```sh
-jackal                       # launches against the default gateway
-jackal -p "hello"            # all arguments forward to claude untouched
-jackal --setup                # add a new gateway or edit an existing one (prompts for its name)
+jackal                        # launches against the default gateway
+jackal -p "hello"             # all arguments forward to claude untouched
+jackal --setup                # add or edit a gateway: name, URL, token, model
 jackal use work               # switch the default gateway to "work"
 jackal --gateway work -p "hi" # one-off launch against "work" without changing the default
 jackal --list                 # show saved gateways, marking the default
@@ -107,8 +119,9 @@ subscription.
 
 ## What counts as a gateway
 
-`jackal` sets `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` and nothing else,
-so it works with whatever Claude Code itself works with — anything that serves
+`jackal` sets `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`, plus an optional
+`ANTHROPIC_MODEL` pin and a discovery flag chosen at setup, and nothing else.
+It works with whatever Claude Code itself works with — anything that serves
 the Anthropic Messages API over HTTP and accepts a bearer token:
 
 - a [LiteLLM](https://docs.litellm.ai/) proxy, on `http://localhost:4000` or
@@ -119,15 +132,18 @@ the Anthropic Messages API over HTTP and accepts a bearer token:
 
 ## What `jackal` does not do
 
-`jackal` moves two strings into the environment. It performs no API translation
-and carries no traffic.
+`jackal` moves environment variables into the process — the base URL, the
+token, and optionally a model pin and a discovery flag. It performs no API
+translation and carries no traffic.
 
 - **No format translation.** The endpoint must already speak the Anthropic
   Messages API. An OpenAI-only endpoint needs a translating proxy — LiteLLM or
   equivalent — in front of it; point `jackal` at that proxy, not at the OpenAI
   endpoint.
-- **No model routing.** `jackal` does not select models, fall back between
-  providers, or rewrite requests. Whatever is at `ANTHROPIC_BASE_URL` decides.
+- **No model routing.** `jackal` does not route between providers, fall back,
+  or rewrite requests — whatever is at `ANTHROPIC_BASE_URL` still decides. It
+  now records a launch default (`ANTHROPIC_MODEL`) and turns on the gateway's
+  own model discovery for `/model`, but neither one routes a request anywhere.
 - **Not for Bedrock or Vertex.** Those are selected with
   `CLAUDE_CODE_USE_BEDROCK` and `CLAUDE_CODE_USE_VERTEX`, not with a base URL.
 - **Not in the request path.** Requests go from `claude` to your gateway
@@ -140,17 +156,54 @@ permissions as before), with `~/.jackal/current` naming the default. A
 pre-existing `~/.jackal.env` from an older version of jackal is migrated
 automatically, once, into a gateway named `default`.
 
-Two environment variables, set for one process only:
+Up to four environment variables, set for one process only:
 
 | Variable | Purpose |
 |---|---|
 | `ANTHROPIC_BASE_URL` | points Claude Code at your gateway |
 | `ANTHROPIC_AUTH_TOKEN` | bearer token sent to it |
+| `ANTHROPIC_MODEL` | optional — the launch default chosen at `--setup`; absent if you skipped the picker |
+| `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | set to `1` unless the gateway file overrides it; makes `/model` list what the gateway serves |
 
 They're set immediately before `os.execv`, which **replaces** the jackal process
 rather than spawning a child — so `claude` inherits them directly, and no
 wrapper process lingers. They apply to that one process and nothing else: no
 `export` in your shell rc, no leakage into other tools.
+
+## Choosing a model at setup
+
+Right after the token is validated, `--setup` fetches `GET /v1/models` from
+the gateway and offers a numbered picker for the model Claude Code should
+launch with:
+
+```
+  ▸ Launch model   3 from gateway
+     1  Claude Opus 4.6     claude-opus-4-6
+     2  Claude Sonnet 4.6   claude-sonnet-4-6
+     3  Claude Haiku 4.5    claude-haiku-4-5
+    number, model id, or blank to skip
+    ›
+```
+
+Answer with the list number, or type a model id directly — useful for an id
+the gateway didn't list, or a catalogue too long to scroll. Leave it blank to
+skip: nothing is written, and Claude Code's own default stands, same as
+before this feature existed.
+
+A gateway that doesn't serve `/v1/models` — 404, unauthorized, timeout, or
+simply unreachable — is a normal, supported setup, not an error. `--setup`
+prints one warning line, skips the picker, and still saves the URL and token.
+The fetch carries a 5 second timeout, so a wedged gateway can't hang setup.
+
+Whatever you pick is written as `ANTHROPIC_MODEL` and only sets what the
+session launches with. Switch it any time from inside the session with
+`/model`, which asks the gateway for its catalogue directly — on every saved
+gateway, including ones created before this feature shipped, since discovery
+is turned on at launch rather than written into each gateway file.
+
+Re-running `--setup` rewrites a gateway from scratch, so it re-asks for the
+URL and token as well, and a model you don't re-pick is not carried over. The
+gateway file is a plain `KEY=value` file if you'd rather edit one line.
 
 ## FAQ
 

@@ -7,6 +7,7 @@
   },
   "files": [
     "jackal",
+    "jackal_lib/*.py",
     "README.md",
     "LICENSE"
   ],
