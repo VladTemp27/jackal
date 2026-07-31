@@ -23,13 +23,15 @@ from an older version is migrated automatically, once, into a gateway named
   update-check.json     cache for the once-daily update check
 ```
 
-Up to four environment variables are set, for one process only:
+Up to six environment variables are set, for one process only:
 
 | Variable | Purpose |
 |---|---|
 | `ANTHROPIC_BASE_URL` | points Claude Code at your gateway |
 | `ANTHROPIC_AUTH_TOKEN` | bearer token sent to it |
 | `ANTHROPIC_MODEL` | optional — the launch default chosen at `--setup`; absent if you skipped the picker |
+| `ANTHROPIC_DEFAULT_SONNET_MODEL` | optional — gateway model used for Claude Code Sonnet background requests, including auto-mode safety classification |
+| `ANTHROPIC_DEFAULT_OPUS_MODEL` | optional — the same selected gateway model, used when Claude Code falls back to its Opus background route |
 | `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | set to `1` unless the gateway file overrides it; makes `/model` list what the gateway serves |
 
 They're set immediately before `os.execv`, which **replaces** the jackal
@@ -46,8 +48,9 @@ default, `jackal` refuses to guess and tells you to run `jackal use <name>`.
 ## Choosing a model at setup
 
 Right after the token is validated, `--setup` fetches `GET /v1/models` from the
-gateway and offers a numbered picker for the model Claude Code should launch
-with:
+gateway — authenticated with the same bearer token, and fully paginated to
+walk a catalogue larger than one page — and offers a numbered picker for the
+model Claude Code should launch with:
 
 ```
   ▸ Launch model   3 from gateway
@@ -62,16 +65,44 @@ Answer with the list number, or type a model id directly — useful for an id th
 gateway didn't list, or a catalogue too long to scroll. Leave it blank to skip:
 nothing is written, and Claude Code's own default stands.
 
-A gateway that doesn't serve `/v1/models` — 404, unauthorized, timeout, or
-simply unreachable — is a normal, supported setup, not an error. `--setup`
-prints one warning line, skips the picker, and still saves the URL and token.
-The fetch carries a 5 second timeout, so a wedged gateway can't hang setup.
+`/v1/models` is mandatory, not a convenience: a fetch error, a parse or
+pagination failure, or a catalogue with no usable model ids aborts `--setup`
+before the gateway file is touched, so an existing gateway is left exactly as
+it was. The launch model choice above stays optional either way.
 
-Whatever you pick is written as `ANTHROPIC_MODEL` and only sets what the
-session launches with. Switch it any time from inside the session with
-`/model`, which asks the gateway for its catalogue directly — on every saved
-gateway, including ones created before this feature shipped, since discovery is
-turned on at launch rather than written into each gateway file.
+### Auto-mode model
+
+Claude Code's auto mode routes safety classification through its own
+background Sonnet and Opus requests. If the gateway's catalogue already has
+both a canonical `claude-sonnet-*` and a canonical `claude-opus-*` id, those
+routes work unmodified and `--setup` skips straight past this prompt. If
+either family is missing, `--setup` asks for an Auto-mode model:
+
+```
+  ▸ Auto-mode model   3 from gateway
+     1  GPT 5.6 Sol          gateway-gpt-5.6-sol
+     2  Kimi K2.6            gateway-kimi-k2.6
+     3  GLM 5.1              gateway-glm-5.1
+    number, model id, blank for gateway-gpt-5.6-sol, or skip
+    ›
+```
+
+Enter reuses whatever you picked as the launch model; if you left the launch
+model blank there's nothing to reuse, so `--setup` skips the alias and warns
+that auto mode may be unavailable. Typing `skip` explicitly leaves both
+aliases unset. Whatever is chosen is written to both
+`ANTHROPIC_DEFAULT_SONNET_MODEL` and `ANTHROPIC_DEFAULT_OPUS_MODEL`, so the
+same gateway model backs Claude Code's Opus fallback route too.
+
+Running `--setup`/`--reconfigure` against an existing gateway replaces its
+saved aliases rather than preserving them: skipping the Auto-mode prompt on a
+reconfigure drops a previously-set pair instead of carrying it over.
+
+Whatever you pick as the launch model is written as `ANTHROPIC_MODEL` and only
+sets what the session launches with. Switch it any time from inside the
+session with `/model`, which asks the gateway for its catalogue directly — on
+every saved gateway, including ones created before this feature shipped, since
+discovery is turned on at launch rather than written into each gateway file.
 
 ### If the gateway adds models later, does `/model` show them?
 

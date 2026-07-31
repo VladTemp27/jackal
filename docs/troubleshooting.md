@@ -43,6 +43,9 @@ Copy-Item (Get-Command python).Source (Join-Path (Split-Path (Get-Command python
 | `gateway name must be non-empty and only letters, digits, - or _ — nothing saved` | Invalid gateway name at the `--setup` prompt. |
 | `URL must start with http:// or https:// — nothing saved` | Base URL entered without a scheme. `gw.example.com` is rejected; `https://gw.example.com` is accepted. |
 | `token required — nothing saved` | Empty token at the prompt. Nothing is written; any previous config is left intact. |
+| `could not list gateway models (...) — nothing saved` | `/v1/models` was missing, unauthorized, unreachable, malformed, incomplete, or too large. Fix the endpoint or token and rerun setup; an existing gateway is unchanged. If the gateway has no catalogue endpoint at all, write `~/.jackal/<name>.env` by hand instead — see [configuration](configuration.md#where-gateways-live) for the format. |
+| `gateway exposes no usable models through /v1/models — nothing saved` | The endpoint returned no model IDs Jackal can safely store. Configure the gateway to expose at least one valid model. |
+| `no auto-mode model configured — auto mode may be unavailable on this gateway` | The gateway lacked a complete canonical Sonnet/Opus pair and classifier selection was skipped. Reconfigure and select a gateway model for auto mode. |
 | `jackal: no gateway named '<name>' — see jackal --list` | `use`, `--gateway`, or `--remove` named a gateway that isn't saved. |
 | `` jackal: multiple gateways saved, no default set — run `jackal use <name>` `` | Bare `jackal` with 2+ saved gateways and no default — run `jackal use <name>` to pick one. |
 

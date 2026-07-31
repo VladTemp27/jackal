@@ -61,9 +61,11 @@ def fetch_models(url, token, timeout=MODELS_TIMEOUT):
     one-line reason otherwise. Both can be set at once: a gateway that serves
     page one and then fails still yields a usable list plus a warning.
 
-    Never raises. A gateway implementing only /v1/messages is a supported
-    setup rather than a failure, so every way this can go wrong has to come
-    back as a value the caller can mention and move past.
+    Never raises: the contract is to return (models, message) rather than
+    leak parser or transport exceptions out of the network boundary. Setup
+    treats every returned error as fatal, but keeping one total return shape
+    gives it a concise error, preserves existing credentials, and avoids
+    tracebacks for IncompleteRead, BadStatusLine, and deeply nested JSON.
     """
     endpoint = url.rstrip("/") + "/v1/models"
     models, after = [], None
@@ -132,8 +134,8 @@ def fetch_models(url, token, timeout=MODELS_TIMEOUT):
             # returning a silently truncated catalogue.
             return models, f"list truncated at {MODELS_PAGES} pages"
     except urllib.error.HTTPError as e:
-        # The expected case: 404 for a gateway without the endpoint, 401 for a
-        # token the endpoint won't accept. Worth a crisper line than str().
+        # 404 for a gateway without the endpoint, 401 for a rejected token —
+        # both fatal, but worth a crisper line than str().
         return models, f"HTTP {e.code}"
     except Exception as e:  # noqa: BLE001 — see below; the breadth is the point
         # Deliberately total. The contract above is "never raises", and an
@@ -146,8 +148,24 @@ def fetch_models(url, token, timeout=MODELS_TIMEOUT):
     return models, None
 
 
-def choose_model(models, w, tty_in, c):
-    """The chosen model id, or None to leave Claude Code's default alone.
+def has_claude_classifier_models(models):
+    """True when Claude Code's native Sonnet and Opus classifier routes exist."""
+    return any(m["id"].startswith("claude-sonnet-") for m in models) and any(
+        m["id"].startswith("claude-opus-") for m in models
+    )
+
+
+def choose_model(
+    models,
+    w,
+    tty_in,
+    c,
+    *,
+    title="Launch model",
+    default=None,
+    allow_skip=False,
+):
+    """A selected model id, default on blank, or None when skipped.
 
     Accepts a list number or a model id typed verbatim. The advertised list
     can be a subset of what a gateway will actually serve — undated aliases
@@ -155,7 +173,7 @@ def choose_model(models, w, tty_in, c):
     isn't listed has to keep working.
     """
     w(
-        f"\n  {c['C']}▸{c['Z']} {c['B']}Launch model{c['Z']}   "
+        f"\n  {c['C']}▸{c['Z']} {c['B']}{title}{c['Z']}   "
         f"{c['D']}{len(models)} from gateway{c['Z']}\n"
     )
     # Pad so the ids line up, capped so one verbose display_name can't push
@@ -166,11 +184,19 @@ def choose_model(models, w, tty_in, c):
             f"    {c['C']}{i:>2}{c['Z']}  {m['display_name']:<{pad}}"
             f"   {c['D']}{m['id']}{c['Z']}\n"
         )
-    w(f"    {c['D']}number, model id, or blank to skip{c['Z']}\n")
+    if default:
+        hint = f"number, model id, blank for {default}"
+    else:
+        hint = "number, model id, or blank to skip"
+    if allow_skip:
+        hint += ", or skip"
+    w(f"    {c['D']}{hint}{c['Z']}\n")
     w(f"    {c['D']}›{c['Z']} ")
     answer = (tty_in.readline() or "").strip()
-    if not answer:
+    if allow_skip and answer == "skip":
         return None
+    if not answer:
+        return default
     # isdecimal, not isdigit: isdigit accepts characters int() rejects, so '²'
     # — a dedicated key next to 1 on AZERTY — would pass the guard and then
     # raise ValueError out of int().
@@ -181,6 +207,6 @@ def choose_model(models, w, tty_in, c):
         # A bare number outside the list is a typo, not a model id. Treating it
         # as one would pin something like "12" and surface the mistake much
         # later as an opaque error from Claude Code.
-        w(f"    {c['D']}no entry {n} — no model pinned{c['Z']}\n")
+        w(f"    {c['D']}no entry {n}{c['Z']}\n")
         return None
     return answer

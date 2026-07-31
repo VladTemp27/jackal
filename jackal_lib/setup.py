@@ -10,7 +10,12 @@ import sys
 from pathlib import Path
 
 from .gateways import JACKAL_DIR, gateway_path, read_current, valid_name, write_current
-from .models import choose_model, fetch_models, usable_model
+from .models import (
+    choose_model,
+    fetch_models,
+    has_claude_classifier_models,
+    usable_model,
+)
 from .terminal import colors
 
 
@@ -60,20 +65,13 @@ def run_setup(out, tty_in):
     if not token:
         die("token required — nothing saved")
 
-    # Nothing below may die(): the fetch is a convenience, and a gateway
-    # without /v1/models must still end up saved. Reaching here means the URL
-    # and token are going to disk.
     models, err = fetch_models(url, token)
     if err:
-        w(
-            f"\n  {c['D']}·  no model list from gateway ({err})"
-            f" — no model pinned{c['Z']}\n"
-        )
-    elif not models:
-        # Reachable: a gateway can answer 200 with an empty data[]. Silence
-        # here would look like the prompt was skipped for no reason.
-        w(f"\n  {c['D']}·  gateway listed no models — no model pinned{c['Z']}\n")
-    model = choose_model(models, w, tty_in, c) if models else None
+        die(f"could not list gateway models ({err}) — nothing saved")
+    if not models:
+        die("gateway exposes no usable models through /v1/models — nothing saved")
+
+    model = choose_model(models, w, tty_in, c)
     if model and not usable_model(model):
         w(
             f"\n  {c['R']}·{c['Z']}  {c['D']}model id {model!r} can't be stored"
@@ -81,9 +79,35 @@ def run_setup(out, tty_in):
         )
         model = None
 
+    auto_model = None
+    if not has_claude_classifier_models(models):
+        auto_model = choose_model(
+            models,
+            w,
+            tty_in,
+            c,
+            title="Auto-mode model",
+            default=model,
+            allow_skip=True,
+        )
+        if auto_model and not usable_model(auto_model):
+            w(
+                f"\n  {c['R']}·{c['Z']}  {c['D']}model id {auto_model!r}"
+                f" can't be stored safely — auto mode may be unavailable{c['Z']}\n"
+            )
+            auto_model = None
+        if not auto_model:
+            w(
+                f"\n  {c['D']}·  no auto-mode model configured"
+                f" — auto mode may be unavailable on this gateway{c['Z']}\n"
+            )
+
     body = f"ANTHROPIC_BASE_URL={url}\nANTHROPIC_AUTH_TOKEN={token}\n"
     if model:
         body += f"ANTHROPIC_MODEL={model}\n"
+    if auto_model:
+        body += f"ANTHROPIC_DEFAULT_SONNET_MODEL={auto_model}\n"
+        body += f"ANTHROPIC_DEFAULT_OPUS_MODEL={auto_model}\n"
 
     JACKAL_DIR.mkdir(mode=0o700, exist_ok=True)
     # O_CREAT with mode 0600 means the file is never briefly world-readable.
