@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .gateways import gateway_path, host, load_config
 from .terminal import colors
+from .updates import maybe_check_for_update
 
 CLAUDE_HINT = "install it with: npm i -g @anthropic-ai/claude-code"
 
@@ -81,6 +82,7 @@ def launch(name, args):
     # after load_config means a line in the file still wins, which is the
     # whole opt-out — no extra flag needed.
     os.environ.setdefault("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "1")
+    maybe_check_for_update(version())
     banner(name)
 
     claude = find_claude()
