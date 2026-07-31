@@ -2,8 +2,10 @@
 """Test suite for jackal. Run: python3 test.py
 
 Covers the paths with real failure modes — the tty guard, credential
-preservation, and output cleanliness. Every test uses a throwaway $HOME and a
-stub `claude`, so it never touches your real config or reaches any gateway.
+preservation, output cleanliness, and what a gateway can talk jackal into
+writing. Every test uses a throwaway $HOME and a stub `claude`, so it never
+touches your real config. Gateway responses come from a stub on 127.0.0.1,
+so nothing leaves the machine and no real gateway is contacted.
 """
 
 import json

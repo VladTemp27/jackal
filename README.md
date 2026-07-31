@@ -38,7 +38,23 @@ npm link
 ```
 
 `npm link` symlinks `jackal` onto your PATH, so edits to the repo take effect
-immediately with no reinstall step.
+immediately with no reinstall step. `sys.path[0]` is the resolved script
+directory, so `jackal_lib` is importable through that symlink.
+
+```
+jackal                  entry point: argument dispatch and main()
+jackal_lib/
+  terminal.py           colour support, the controlling tty
+  gateways.py           paths, naming, listing, migration, loading
+  models.py             fetching /v1/models, the picker, id validation
+  setup.py              the interactive --setup flow
+  launch.py             the banner and the handoff to claude
+test.py                 the whole suite, stdlib unittest
+```
+
+`terminal` imports nothing else of ours; `gateways` and `models` depend only on
+it; `setup` and `launch` sit on top. Keeping that a DAG is what lets any one
+module be read on its own.
 
 The first run prompts for a gateway name, base URL, and token, then offers the
 models the gateway reports:
@@ -205,6 +221,14 @@ Re-running `--setup` rewrites a gateway from scratch, so it re-asks for the
 URL and token as well, and a model you don't re-pick is not carried over. The
 gateway file is a plain `KEY=value` file if you'd rather edit one line.
 
+What reaches the file is checked first. A model id has to survive a round trip
+through `KEY=value` — an id carrying a newline would otherwise append a second
+line that `jackal` would read back as a real variable on every later launch, so
+one could redirect your base URL and the token with it. Ids that can't be
+stored intact are refused, and control characters are stripped from anything
+the gateway asks to have printed, so a response can't redraw the picker to make
+one entry look like another.
+
 ## FAQ
 
 ### Does this log me out of my Claude subscription?
@@ -217,6 +241,22 @@ process, and your stored login is never read or written.
 
 No. The only files `jackal` writes are under `~/.jackal/` — one `.env` file
 per saved gateway, plus a `current` file naming the default.
+
+### If the gateway adds models later, does `/model` show them?
+
+Yes. `jackal` has nothing to serve you a stale list from.
+
+The catalogue fetched during `--setup` is used once, to draw the picker, and is
+then discarded — it is never written to disk. A gateway file holds a single
+model **id**, not a list, and `jackal` makes no network request at launch at
+all. So `/model` is Claude Code querying your gateway with nothing of
+`jackal`'s in the way.
+
+The one thing that does persist is your pinned `ANTHROPIC_MODEL`. A model added
+to the gateway later will appear in `/model` but will not become your launch
+default on its own, and if the gateway ever *removes* the model you pinned,
+launches fail until you change that line. Leave the pin blank at setup if you
+would rather track whatever the gateway defaults to.
 
 ### `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`?
 
@@ -284,8 +324,11 @@ python3 test.py
 ```
 
 Stdlib `unittest` and `pty`, no dev dependencies. Every test runs against a
-throwaway `$HOME` with a stub `claude`, so it never touches your real config or
-reaches a gateway. The pty tests self-skip on Windows.
+throwaway `$HOME` with a stub `claude`, so it never touches your real config.
+The model-discovery tests stand up a stub gateway on `127.0.0.1` with
+`http.server` — a real socket, since the suite drives `jackal` as a subprocess
+and has nothing in-process to patch — so nothing leaves your machine and no
+real gateway is contacted. The pty tests self-skip on Windows.
 
 ## Design notes: `os.execv`, `/dev/tty`, and `0600`
 
@@ -317,7 +360,26 @@ reaches a gateway. The pty tests self-skip on Windows.
   a later `chmod`. `jackal` also calls `chmod` afterwards, which is what corrects
   the mode when the file already existed with looser permissions.
 - **`--setup` does not delete the old config first**, so an aborted reconfigure
-  leaves working credentials intact.
+  leaves working credentials intact. The model fetch and the picker both run
+  *before* the file is opened for writing, which is what keeps that true now
+  that setup can talk to the network.
+- **The model fetch catches `Exception`, deliberately.** Its contract is that it
+  never raises, because a gateway serving only `/v1/messages` has to remain a
+  supported setup. An enumerated tuple of exception types kept missing cases
+  that each crashed `--setup` with a traceback: `IncompleteRead` and
+  `BadStatusLine` are `HTTPException`, not `OSError`, and `RecursionError` from
+  deeply nested JSON is a `RuntimeError`. Every branch returns the same
+  `(models, message)` either way, so narrowing bought nothing and cost live
+  failure modes.
+- **The bearer token is set with `add_unredirected_header`.** `urllib`'s
+  redirect handler copies ordinary headers onto the redirected request, so a
+  gateway answering `302` would hand your token to whatever host `Location`
+  names — and `--setup` accepts `http://` URLs, where a redirect can be
+  injected. Unredirected headers are not copied.
+- **The response is bounded in three directions at once**: a 15 second deadline
+  across the whole walk, a 2 MB cap per response, and a page limit. A socket
+  timeout alone only bounds *inactivity*, so a gateway trickling one byte just
+  inside it would never trip.
 
 ## Compatibility
 
