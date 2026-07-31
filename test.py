@@ -329,6 +329,27 @@ class JackalTest(unittest.TestCase):
         self.assertTrue(os.access(JACKAL, os.X_OK), "jackal must be executable")
         self.assertTrue(JACKAL.read_text().startswith("#!"), "jackal needs a shebang")
 
+    def test_version_matches_package_json(self):
+        """--version must report the version npm actually published."""
+        expected = json.loads((HERE / "package.json").read_text())["version"]
+        r = self.run_piped("--version")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn(f"jackal {expected}", r.stdout)
+        self.assertNotIn("unknown", r.stdout)
+
+    def test_version_works_without_any_gateway(self):
+        """Asking the version must not depend on config state."""
+        r = self.run_piped("--version", with_claude=False)
+        self.assertEqual(r.returncode, 0)
+        self.assertRegex(r.stdout, r"jackal \d+\.\d+\.\d+")
+        # No gateway is configured here, so the setup prompt must not appear.
+        self.assertNotIn("need a terminal", r.stdout + r.stderr)
+
+    def test_version_reports_claude_too(self):
+        """Intercepting --version must not cost the user claude's version."""
+        r = self.run_piped("--version")
+        self.assertIn("claude ", r.stdout)
+
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_bad_name_writes_nothing(self):
         """A name that isn't safe as a filename component must be rejected."""
@@ -348,7 +369,7 @@ class JackalTest(unittest.TestCase):
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_intake_writes_0600_and_hides_token(self):
         out, _ = self.run_pty(
-            inputs=["testgw", "https://gw.test", "tok_abc123"], args=["--version"]
+            inputs=["testgw", "https://gw.test", "tok_abc123"], args=[]
         )
         gw = self.home / ".jackal" / "testgw.env"
         self.assertTrue(gw.exists())
@@ -590,9 +611,7 @@ class JackalTest(unittest.TestCase):
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_picker_number_writes_that_model(self):
         url, _ = self.models_server()
-        out, _ = self.run_pty(
-            inputs=["testgw", url, "tok_abc123", "2"], args=["--version"]
-        )
+        out, _ = self.run_pty(inputs=["testgw", url, "tok_abc123", "2"], args=[])
         self.assertIn("ANTHROPIC_MODEL=gw-two\n", self.gateway_body())
         self.assertIn("Gateway Two", out, "picker must render display_name")
         self.assertNotIn("tok_abc123", out, "token must never reach the screen")
@@ -601,16 +620,14 @@ class JackalTest(unittest.TestCase):
     def test_picker_accepts_raw_model_id(self):
         """An advertised list can be a subset — an unlisted id must still work."""
         url, _ = self.models_server()
-        self.run_pty(
-            inputs=["testgw", url, "tok_a", "claude-haiku-4-5"], args=["--version"]
-        )
+        self.run_pty(inputs=["testgw", url, "tok_a", "claude-haiku-4-5"], args=[])
         self.assertIn("ANTHROPIC_MODEL=claude-haiku-4-5\n", self.gateway_body())
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_blank_writes_no_model_pin(self):
         """Skipping must leave Claude Code's own default alone."""
         url, _ = self.models_server()
-        self.run_pty(inputs=["testgw", url, "tok_a", ""], args=["--version"])
+        self.run_pty(inputs=["testgw", url, "tok_a", ""], args=[])
         body = self.gateway_body()
         self.assertIn("ANTHROPIC_BASE_URL=", body)
         self.assertNotIn("ANTHROPIC_MODEL", body)
@@ -619,7 +636,7 @@ class JackalTest(unittest.TestCase):
     def test_fetch_sends_bearer_token(self):
         """Must match the header claude sends, or a passing fetch proves nothing."""
         url, seen = self.models_server(expect_auth="Bearer tok_abc123")
-        self.run_pty(inputs=["testgw", url, "tok_abc123", ""], args=["--version"])
+        self.run_pty(inputs=["testgw", url, "tok_abc123", ""], args=[])
         self.assertTrue(seen, "gateway was never asked for its models")
         self.assertTrue(seen[0][1], "Authorization was not 'Bearer <token>'")
         self.assertTrue(seen[0][0].startswith("/v1/models"), seen[0][0])
@@ -627,7 +644,7 @@ class JackalTest(unittest.TestCase):
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_pagination_reaches_second_page(self):
         url, seen = self.models_server()
-        self.run_pty(inputs=["testgw", url, "tok_a", "3"], args=["--version"])
+        self.run_pty(inputs=["testgw", url, "tok_a", "3"], args=[])
         self.assertIn("ANTHROPIC_MODEL=gw-three\n", self.gateway_body())
         self.assertEqual(len(seen), 2, "should stop after has_more goes false")
         self.assertIn("after_id=gw-two", seen[1][0])
@@ -636,7 +653,7 @@ class JackalTest(unittest.TestCase):
     def test_missing_models_endpoint_still_saves(self):
         """A gateway serving only /v1/messages is supported, not an error."""
         url, _ = self.models_server(status=404)
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a"], args=["--version"])
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a"], args=[])
         body = self.gateway_body()
         self.assertIn(f"ANTHROPIC_BASE_URL={url}", body)
         self.assertIn("tok_a", body)
@@ -648,9 +665,7 @@ class JackalTest(unittest.TestCase):
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_unreachable_gateway_still_saves(self):
-        out, code = self.run_pty(
-            inputs=["testgw", self.dead_url(), "tok_a"], args=["--version"]
-        )
+        out, code = self.run_pty(inputs=["testgw", self.dead_url(), "tok_a"], args=[])
         self.assertIn("tok_a", self.gateway_body())
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
         self.assertIn("no model pinned", out)
@@ -676,7 +691,7 @@ class JackalTest(unittest.TestCase):
     def test_truncated_response_still_saves(self):
         """IncompleteRead is not an OSError; it must not escape and kill setup."""
         out, code = self.run_pty(
-            inputs=["testgw", self.truncated_server(), "tok_a"], args=["--version"]
+            inputs=["testgw", self.truncated_server(), "tok_a"], args=[]
         )
         self.assertIn("tok_a", self.gateway_body())
         self.assertIn("no model pinned", out)
@@ -688,7 +703,7 @@ class JackalTest(unittest.TestCase):
         """Pointing jackal at a non-HTTP port must warn, not crash."""
         out, code = self.run_pty(
             inputs=["testgw", self.garbage_status_server(), "tok_a"],
-            args=["--version"],
+            args=[],
         )
         self.assertIn("tok_a", self.gateway_body())
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
@@ -705,7 +720,7 @@ class JackalTest(unittest.TestCase):
             "last_id": None,
         }
         url, _ = self.models_server(pages={None: big})
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a"], args=["--version"])
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a"], args=[])
         self.assertIn("tok_a", self.gateway_body())
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
         self.assertIn("larger than", out)
@@ -720,7 +735,7 @@ class JackalTest(unittest.TestCase):
         worse experience than not showing it.
         """
         url, _ = self.models_server(pages={None: HOSTILE})
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a"], args=["--version"])
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a"], args=[])
         body = self.gateway_body()
         self.assertNotIn("attacker.test", body, "second env line was written")
         self.assertNotIn("ANTHROPIC_MODEL", body)
@@ -735,9 +750,7 @@ class JackalTest(unittest.TestCase):
     def test_typed_model_id_with_equals_is_refused(self):
         """The fetch-time filter can't see a typed id, so the write-time gate stands."""
         url, _ = self.models_server()
-        out, code = self.run_pty(
-            inputs=["testgw", url, "tok_a", "bad=id"], args=["--version"]
-        )
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "bad=id"], args=[])
         body = self.gateway_body()
         self.assertNotIn("ANTHROPIC_MODEL", body)
         self.assertNotIn("bad=id", body)
@@ -748,9 +761,7 @@ class JackalTest(unittest.TestCase):
     def test_superscript_digit_does_not_crash_picker(self):
         """isdigit() accepts characters int() rejects; '²' is next to 1 on AZERTY."""
         url, _ = self.models_server()
-        out, code = self.run_pty(
-            inputs=["testgw", url, "tok_a", "²"], args=["--version"]
-        )
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "²"], args=[])
         self.assertNotIn("Traceback", out)
         self.assertEqual(code, 0)
         self.assertIn("tok_a", self.gateway_body(), "credentials must still be saved")
@@ -759,7 +770,7 @@ class JackalTest(unittest.TestCase):
     def test_out_of_range_number_is_not_treated_as_a_model_id(self):
         """Typing 12 with 3 entries is a typo, not a model called "12"."""
         url, _ = self.models_server()
-        out, _ = self.run_pty(inputs=["testgw", url, "tok_a", "12"], args=["--version"])
+        out, _ = self.run_pty(inputs=["testgw", url, "tok_a", "12"], args=[])
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
         self.assertIn("no entry 12", out)
 
@@ -784,9 +795,7 @@ class JackalTest(unittest.TestCase):
             }
         }
         url, _ = self.models_server(pages=pages)
-        out, code = self.run_pty(
-            inputs=["testgw", url, "tok_a", "2"], args=["--version"]
-        )
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "2"], args=[])
         self.assertNotIn("\033[1A", out, "escape sequence reached the terminal")
         self.assertNotIn("\033[2K", out)
         # The hostile row is dropped entirely, so entry 2 no longer exists.
@@ -808,9 +817,7 @@ class JackalTest(unittest.TestCase):
             }
         }
         url, _ = self.models_server(pages=pages)
-        out, code = self.run_pty(
-            inputs=["testgw", url, "tok_a", "1"], args=["--version"]
-        )
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "1"], args=[])
         self.assertNotIn("Traceback", out)
         self.assertEqual(code, 0)
         # The surrogate entry is gone, so entry 1 is the healthy one.
@@ -836,7 +843,7 @@ class JackalTest(unittest.TestCase):
         self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         url = f"http://127.0.0.1:{srv.server_address[1]}"
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a"], args=["--version"])
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a"], args=[])
         self.assertNotIn("Traceback", out)
         self.assertIn("tok_a", self.gateway_body())
         self.assertEqual(code, 0)
@@ -846,7 +853,7 @@ class JackalTest(unittest.TestCase):
         """200 with an empty data[] must not look like a skipped prompt."""
         pages = {None: {"data": [], "has_more": False, "last_id": None}}
         url, _ = self.models_server(pages=pages)
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a"], args=["--version"])
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a"], args=[])
         self.assertIn("listed no models", out)
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
         self.assertEqual(code, 0)
@@ -855,7 +862,7 @@ class JackalTest(unittest.TestCase):
     def test_never_touches_claude_config_dir(self):
         """jackal's stated promise: it affects jackal alone."""
         url, _ = self.models_server()
-        self.run_pty(inputs=["testgw", url, "tok_a", "1"], args=["--version"])
+        self.run_pty(inputs=["testgw", url, "tok_a", "1"], args=[])
         self.assertFalse((self.home / ".claude").exists())
         self.assertFalse((self.home / ".claude.json").exists())
 
@@ -870,7 +877,7 @@ class JackalTest(unittest.TestCase):
             }
         }
         url, _ = self.models_server(pages=pages)
-        out, _ = self.run_pty(inputs=["testgw", url, "tok_a", "1"], args=["--version"])
+        out, _ = self.run_pty(inputs=["testgw", url, "tok_a", "1"], args=[])
         self.assertIn("ANTHROPIC_MODEL=gw-one\n", self.gateway_body())
         # The ESC byte and the \r are gone, so what is left renders as inert
         # text: the terminal prints "[2K" instead of erasing the line.

@@ -103,7 +103,20 @@ jackal use work               # switch the default gateway to "work"
 jackal --gateway work -p "hi" # one-off launch against "work" without changing the default
 jackal --list                 # show saved gateways, marking the default
 jackal --remove work          # delete a saved gateway
+jackal --version              # jackal's version, and claude's
 ```
+
+`--version` is the one claude flag jackal intercepts rather than forwards,
+since `jackal --version` reporting *claude's* version is more confusing than
+useful. It prints both, so nothing is lost:
+
+```
+jackal 0.3.0
+claude 2.1.220 (Claude Code)
+```
+
+It also answers before any config is read, so it works with no gateway saved
+and even if the gateway store is unreadable.
 
 The first gateway you set up automatically becomes the default. Adding more
 gateways with `jackal --setup` never changes an *already-set* default on its

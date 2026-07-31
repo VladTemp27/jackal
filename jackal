@@ -7,6 +7,7 @@ Gateways live under ~/.jackal/<name>.env (0600). Manage them with:
   jackal --gateway <name>   launch against one gateway without changing the default
   jackal --list             show saved gateways
   jackal --remove <name>    delete a saved gateway
+  jackal --version          jackal's version, and claude's
 """
 
 import sys
@@ -23,7 +24,7 @@ from jackal_lib.gateways import (
     resolve_gateway,
     write_current,
 )
-from jackal_lib.launch import launch
+from jackal_lib.launch import launch, print_versions
 from jackal_lib.setup import run_setup
 from jackal_lib.terminal import open_tty
 
@@ -53,6 +54,13 @@ def main():
         pass  # exotic stdio (e.g. replaced by a test harness) — best effort only
 
     args = sys.argv[1:]
+
+    # Before migrate_old_config: asking for the version should never depend on
+    # config state, and must still answer if the gateway store is broken.
+    if args and args[0] in ("--version", "-V"):
+        print_versions()
+        return
+
     migrate_old_config()
 
     if args and args[0] in ("--setup", "--reconfigure"):

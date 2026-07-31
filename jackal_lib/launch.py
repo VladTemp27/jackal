@@ -1,5 +1,6 @@
 """Handing off to claude with the gateway's environment in place."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -10,6 +11,50 @@ from .gateways import gateway_path, host, load_config
 from .terminal import colors
 
 CLAUDE_HINT = "install it with: npm i -g @anthropic-ai/claude-code"
+
+
+def find_claude():
+    """The claude executable, preferring PATH, falling back to the standard
+    install path for spawns that inherit a minimal PATH (cron, CI, agents)."""
+    return shutil.which("claude") or str(Path.home() / ".local/bin/claude")
+
+
+def version():
+    """jackal's version, read from the package.json shipped beside it.
+
+    Single source of truth: npm installs package.json next to this package and
+    a git checkout has it at the repo root, so a bump cannot leave the code and
+    the published version disagreeing.
+    """
+    pkg = Path(__file__).resolve().parent.parent / "package.json"
+    try:
+        return json.loads(pkg.read_text())["version"]
+    except (OSError, ValueError, KeyError):
+        return "unknown"
+
+
+def print_versions():
+    """Print jackal's version, and claude's when it can be determined.
+
+    --version is a real claude flag, so intercepting it would otherwise cost
+    the user the answer they were previously getting.
+    """
+    print(f"jackal {version()}")
+    claude = find_claude()
+    if not os.access(claude, os.X_OK):
+        return
+    try:
+        out = subprocess.run(
+            [claude, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return  # claude present but unrunnable; jackal's version still printed
+    if out:
+        print(f"claude {out}")
 
 
 def banner(name):
@@ -38,7 +83,7 @@ def launch(name, args):
     os.environ.setdefault("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "1")
     banner(name)
 
-    claude = shutil.which("claude") or str(Path.home() / ".local/bin/claude")
+    claude = find_claude()
     if not os.access(claude, os.X_OK):
         sys.exit(
             f"jackal: Claude Code not found (looked for '{claude}')\n        {CLAUDE_HINT}"

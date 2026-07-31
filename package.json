@@ -1,6 +1,6 @@
 {
   "name": "jackal-cli",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Point Claude Code at a custom Anthropic-compatible endpoint (LiteLLM, a corporate AI gateway, any proxy) without touching your normal claude login.",
   "bin": {
     "jackal": "jackal"
