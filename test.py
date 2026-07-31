@@ -749,7 +749,7 @@ class JackalTest(unittest.TestCase):
         url, _ = self.models_server(pages=pages)
 
         # User types the displayed clean ID instead of the picker number
-        out, _ = self.run_pty(inputs=["testgw", url, "tok_a", "gpt-5.6-sol"], args=[])
+        self.run_pty(inputs=["testgw", url, "tok_a", "gpt-5.6-sol"], args=[])
 
         # The cloaked ID must be stored for routing, not the typed clean ID
         self.assertIn(f"ANTHROPIC_MODEL={cloaked}\n", self.gateway_body())
