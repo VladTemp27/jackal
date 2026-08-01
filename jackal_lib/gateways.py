@@ -93,8 +93,23 @@ def gateway_settings_path(name):
     return gateway_claude_dir(name) / "settings.json"
 
 
+def _mkdir_secure(path):
+    """Create path and any missing Jackal-owned ancestors, each 0700.
+
+    Path.mkdir(mode=..., parents=True) only applies `mode` to the leaf
+    directory — intermediate directories it creates along the way get the
+    umask-default mode instead (typically 0755). Recurse so every level
+    created for a gateway write (~/.jackal, ~/.jackal/claude, the gateway's
+    own profile dir) ends up 0700, not just the last one.
+    """
+    if path.is_dir():
+        return
+    _mkdir_secure(path.parent)
+    path.mkdir(mode=0o700, exist_ok=True)
+
+
 def _atomic_write(path, body):
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _mkdir_secure(path.parent)
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         os.fchmod(fd, 0o600)

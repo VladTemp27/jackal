@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1061,6 +1062,23 @@ class JackalTest(unittest.TestCase):
         self.assertTrue(self.gateway_settings("testgw").exists())
         self.assertFalse((self.home / ".claude").exists())
         self.assertFalse((self.home / ".claude.json").exists())
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_fresh_setup_dirs_are_0700(self):
+        """mkdir(mode=..., parents=True) only chmods the leaf — every
+        ancestor created for a gateway write (~/.jackal, ~/.jackal/claude,
+        the gateway's own profile dir) must still end up owner-only."""
+        self.assertFalse((self.home / ".jackal").exists())
+        url, _ = self.models_server()
+        self.run_pty(inputs=["testgw", url, "tok_a", "1"], args=[])
+        for d in (
+            self.home / ".jackal",
+            self.home / ".jackal" / "claude",
+            self.home / ".jackal" / "claude" / "testgw",
+        ):
+            self.assertEqual(
+                stat.S_IMODE(d.stat().st_mode), 0o700, f"{d} is not 0700"
+            )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_control_characters_stripped_from_display_name(self):
