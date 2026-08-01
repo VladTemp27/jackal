@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .gateways import gateway_path, host, load_config
+from .gateways import gateway_claude_dir, gateway_path, host, load_config
 from .terminal import colors
 from .updates import maybe_check_for_update
 
@@ -76,6 +76,11 @@ def banner(name):
 def launch(name, args):
     """Load a gateway's config, show the banner, and hand off to claude."""
     load_config(gateway_path(name))
+    # Set after load_config so neither a parent shell nor an editable gateway
+    # file can redirect Claude to normal user state: the isolated profile and
+    # a cleared ANTHROPIC_MODEL are enforced last, not merely defaulted.
+    os.environ["CLAUDE_CONFIG_DIR"] = str(gateway_claude_dir(name))
+    os.environ.pop("ANTHROPIC_MODEL", None)
     # Populates the in-session /model picker from the gateway's own
     # /v1/models. Set here rather than written per gateway file so gateways
     # saved before this existed get it too, with no migration. setdefault

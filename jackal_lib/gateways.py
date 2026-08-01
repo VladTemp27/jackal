@@ -4,9 +4,11 @@ Every path here is derived from JACKAL_DIR, which is what keeps jackal out of
 ~/.claude entirely.
 """
 
+import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 from .terminal import colors
@@ -81,6 +83,60 @@ def load_config(path):
 def host(url):
     """The bare host from a base URL, e.g. https://gw.test/v1 -> gw.test."""
     return url.split("://")[-1].split("/")[0]
+
+
+def gateway_claude_dir(name):
+    return JACKAL_DIR / "claude" / name
+
+
+def gateway_settings_path(name):
+    return gateway_claude_dir(name) / "settings.json"
+
+
+def _atomic_write(path, body):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(body)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def _read_gateway_settings(name):
+    path = gateway_settings_path(name)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        sys.exit(f"jackal: invalid Claude settings '{path}': {e}")
+    if not isinstance(data, dict):
+        sys.exit(f"jackal: invalid Claude settings '{path}': expected a JSON object")
+    return data
+
+
+def read_gateway_model(name):
+    model = _read_gateway_settings(name).get("model")
+    return model if isinstance(model, str) else None
+
+
+def write_gateway_model(name, model):
+    data = _read_gateway_settings(name)
+    data["model"] = model
+    _atomic_write(gateway_settings_path(name), json.dumps(data, indent=2) + "\n")
+
+
+def write_gateway_config(path, body):
+    _atomic_write(path, body)
 
 
 def print_list():
