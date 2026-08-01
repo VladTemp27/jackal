@@ -154,6 +154,34 @@ def write_gateway_config(path, body):
     _atomic_write(path, body)
 
 
+def config_value(path, key):
+    """The value of key in path's KEY=VALUE lines, or None if absent."""
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        found, _, value = stripped.partition("=")
+        if found.strip() == key:
+            return value.strip()
+    return None
+
+
+def remove_config_key(path, key):
+    """Atomically drop key's line from path, preserving every other line."""
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    kept = []
+    changed = False
+    for line in lines:
+        stripped = line.strip()
+        found = stripped.partition("=")[0].strip() if "=" in stripped else ""
+        if found == key:
+            changed = True
+            continue
+        kept.append(line)
+    if changed:
+        _atomic_write(path, "".join(kept))
+
+
 def print_list():
     names = list_gateways()
     if not names:

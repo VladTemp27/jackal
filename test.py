@@ -1123,6 +1123,70 @@ class JackalTest(unittest.TestCase):
         self.assertIn("persistent=[gw-one]", r.stdout)
         self.assertIn("effective=[gw-one]", r.stdout)
 
+    def test_legacy_model_seeds_settings_and_is_removed_from_env(self):
+        path = self.seed_named("work", "https://work.test", "tok_w", model=None)
+        path.write_text(path.read_text() + "ANTHROPIC_MODEL=legacy-model\nCUSTOM_FLAG=keep-me\n")
+        path.chmod(0o600)
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("persistent=[legacy-model]", r.stdout)
+        self.assertNotIn("ANTHROPIC_MODEL", path.read_text())
+        self.assertIn("CUSTOM_FLAG=keep-me\n", path.read_text())
+        if POSIX:
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_existing_isolated_model_wins_over_legacy_pin(self):
+        path = self.seed_named("work", "https://work.test", "tok_w", model="native-choice")
+        path.write_text(path.read_text() + "ANTHROPIC_MODEL=stale-pin\n")
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("persistent=[native-choice]", r.stdout)
+        self.assertNotIn("ANTHROPIC_MODEL", path.read_text())
+
+    def test_unpinned_gateway_fails_fast_headless(self):
+        self.seed_named("work", "https://work.test", "tok_w", model=None)
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("needs a model", r.stdout + r.stderr)
+        self.assertIn("run jackal interactively", r.stdout + r.stderr)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_unpinned_gateway_prompts_once_and_saves_model(self):
+        url, seen = self.models_server()
+        self.seed_named("work", url, "tok_w", model=None)
+        self.set_current("work")
+        out, code = self.run_pty(inputs=["2"], args=["-p", "hi"])
+        self.assertEqual(code, 0)
+        self.assertTrue(seen)
+        self.assertEqual(json.loads(self.gateway_settings("work").read_text())["model"], "gw-two")
+        self.assertIn("persistent=[gw-two]", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_unpinned_gateway_accepts_raw_model_when_catalogue_fails(self):
+        self.seed_named("work", self.dead_url(), "tok_w", model=None)
+        self.set_current("work")
+        out, code = self.run_pty(inputs=["manual-model"], args=["-p", "hi"])
+        self.assertEqual(code, 0)
+        self.assertIn("enter a model id manually", out)
+        self.assertEqual(json.loads(self.gateway_settings("work").read_text())["model"], "manual-model")
+
+    def test_malformed_gateway_settings_are_not_overwritten(self):
+        self.seed_named("work", "https://work.test", "tok_w", model=None)
+        settings = self.gateway_settings("work")
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        original = b'{"model": '
+        settings.write_bytes(original)
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(str(settings), r.stdout + r.stderr)
+        self.assertEqual(settings.read_bytes(), original)
+
+    def test_invalid_isolated_model_requires_selection_not_env_export(self):
+        self.seed_named("work", "https://work.test", "tok_w", model="bad=id")
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("needs a model", r.stdout + r.stderr)
+
     def test_no_fetch_on_launch(self):
         """Setup-time only — launching must add no network round-trip."""
         url, seen = self.models_server()
