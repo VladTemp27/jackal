@@ -95,7 +95,7 @@ If the normal `settings.json` is malformed, Jackal exits and names the file. It 
 
 Jackal creates a link for each entry of the normal profile that the gateway directory does not already have, skipping `settings.json`. New entries appearing later are linked on the next launch.
 
-An existing regular file or directory is never replaced, so a gateway created before this behavior keeps whatever it already had; removing the entry restores sharing.
+An entry that is already a link is left alone. An entry that is a real file or directory is a profile created by the fully isolated build: it is renamed aside with a `.jackal-isolated.bak` suffix and then linked, so those gateways start sharing without losing their old state. Nothing is deleted, and the rename happens once — afterwards the link is what exists. If the backup name is already taken, the entry is left as it is rather than overwriting an earlier backup.
 
 Where symbolic links cannot be created — notably Windows without Developer Mode or administrator rights — Jackal reports one actionable line and launches with whatever links exist. Model isolation does not depend on links, so the gateway still works.
 
@@ -358,7 +358,8 @@ Verify that:
 - `settings.json` is a real file, never a link;
 - a `permissions`, `hooks`, or `enabledPlugins` value set in the normal profile is present in the gateway file, while `model` is the gateway's;
 - changing a non-model preference in the gateway file does not survive the next launch, and never reaches the normal profile;
-- an existing regular entry in the gateway directory is not replaced by a link;
+- a gateway left over from the isolated build, holding a real `.claude.json` and `plugins/`, ends up with working links and its originals intact under `.jackal-isolated.bak` names;
+- an entry that is already a link is left alone;
 - a malformed normal `settings.json` exits and names that file, leaving the gateway file unchanged.
 
 ### Gateway isolation

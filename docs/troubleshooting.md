@@ -46,7 +46,8 @@ Copy-Item (Get-Command python).Source (Join-Path (Split-Path (Get-Command python
 | `token required — nothing saved` | Empty token at the prompt. Nothing is written; any previous config is left intact. |
 | `jackal: no gateway named '<name>' — see jackal --list` | `use`, `--gateway`, or `--remove` named a gateway that isn't saved. |
 | `` jackal: multiple gateways saved, no default set — run `jackal use <name>` `` | Bare `jackal` with 2+ saved gateways and no default — run `jackal use <name>` to pick one. |
-| `jackal: invalid Claude settings '<path>': <reason>` | The gateway's isolated `settings.json` is not valid JSON or not a JSON object. Back up and remove that file (see below), then run the gateway interactively to select a model again. |
+| `jackal: invalid Claude settings '<path>': <reason>` | The gateway's own `settings.json` is not valid JSON or not a JSON object. Back up and remove that file (see below), then run the gateway interactively to select a model again. |
+| `jackal: invalid Claude settings '~/.claude/settings.json': <reason>` | Your **normal** Claude settings file — not a gateway's — is not valid JSON or not a JSON object. Every gateway's `settings.json` is rewritten from this file before each launch, so jackal exits naming it rather than launching without your `permissions` rules. Fix `~/.claude/settings.json` directly; jackal only ever reads it, never repairs it. |
 | `jackal: legacy model '<x>' can't be stored safely` | A pre-migration `ANTHROPIC_MODEL` value in the gateway's `.env` contains characters that can't be safely written to `settings.json`. Remove the `ANTHROPIC_MODEL` line from `~/.jackal/<name>.env`, then run `jackal --gateway <name>` interactively and pick a model. |
 
 ## Model and configuration
@@ -56,11 +57,34 @@ Copy-Item (Get-Command python).Source (Join-Path (Split-Path (Get-Command python
 Run `jackal --gateway <name>` in a terminal once and choose or type a model.
 Headless launches refuse to guess.
 
+### "moved N pre-existing entries ... aside as *.jackal-isolated.bak"
+
+One-time notice, printed once per gateway, not an error. This gateway was
+created by the earlier, fully isolated build and had real files — its own
+`.claude.json`, `plugins/`, and so on — where a link to your normal profile
+now belongs. Jackal renamed each one aside with a `.jackal-isolated.bak` suffix
+and linked the shared entry in its place, so the gateway starts seeing your
+agents, skills, plugins, personal MCP servers, and login state. Nothing was
+deleted: the gateway's old per-entry state is still there under the `.bak`
+names, and you can remove those files by hand once you're happy running with
+the shared profile.
+
+### "could not link N profile entries ... continuing without them"
+
+Not fatal — Claude still launches, with whatever links exist. One or more
+entries under `~/.claude` couldn't be symlinked into the gateway's directory.
+This is expected on Windows without Developer Mode or administrator rights;
+model isolation does not depend on links, so only the unlinked entries (an
+agent, a plugin, and so on) are affected. Enable Developer Mode, or run as
+administrator, then relaunch to pick up the rest.
+
 ### Reset one gateway's Claude profile
 
 Back up and remove only `~/.jackal/claude/<name>/`, then run that gateway
-interactively to select a model again. Do not remove `~/.claude` or
-`~/.claude.json`; those belong to ordinary Claude.
+interactively to select a model again — `jackal` recreates the directory,
+reseeds `settings.json`, and relinks the rest of your normal profile into it.
+Do not remove `~/.claude` or `~/.claude.json`; those belong to ordinary
+Claude, and `jackal` never writes to them.
 
 ## Known limits
 

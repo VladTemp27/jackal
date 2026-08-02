@@ -67,12 +67,48 @@ write, and snapshot/restore would race concurrent Claude sessions. Jackal
 therefore sets a stable `CLAUDE_CONFIG_DIR` per gateway. This moves the write
 boundary before it happens and preserves the direct `execv` handoff.
 
-Fully isolated profiles were chosen deliberately over a filtered shared
-overlay. A shared `~/.claude` with just the model field carved out would still
-need every other field — history, credentials, MCP config — reasoned about for
-cross-gateway leakage on every future Claude Code release, and a filter is
-exactly the kind of thing that silently stops matching a new field. A whole
-directory per gateway needs no filter to go stale.
+**A fully isolated profile per gateway was the first version, and it was
+wrong.** Pointing `CLAUDE_CONFIG_DIR` at a directory holding a complete copy
+of the Claude user profile is the smallest change and the strongest isolation
+guarantee, but it silently amputates the rest of the tool: verified against
+Claude Code 2.1.220, `CLAUDE_CONFIG_DIR=<gateway> claude mcp list` reported no
+MCP servers at all, because personal MCP servers, agents, skills, plugins,
+hooks, permissions, and login state all live in that same directory next to
+the model, and none of it existed under the gateway's empty copy. A gateway
+should change the model, not amputate the tool.
+
+**Only `settings.json` is gateway-owned; everything else is a link.**
+`CLAUDE_CONFIG_DIR` still redirects the whole profile root — Claude Code
+offers no field-level persistence routing — so isolating just the model still
+means isolating the one file it lives in. Every other entry in the gateway's
+directory is a symbolic link back to `~/.claude` (plus `.claude.json`, which
+normal Claude keeps outside `~/.claude` but which Claude expects inside
+`CLAUDE_CONFIG_DIR`), so a gateway sees the exact agents, skills, plugins, MCP
+servers, hooks, permissions, and login state normal `claude` does — live, with
+no copying and no drift.
+
+**`settings.json` is rewritten, not linked, because it mixes owned and shared
+keys.** It carries the one key that must stay gateway-owned (`model`)
+alongside keys that must stay shared (`permissions`, `hooks`,
+`enabledPlugins`, `statusLine`); linking it would reopen the original bug and
+isolating it outright would silently drop the user's permission rules and
+disable every plugin. Jackal instead rewrites it before every launch as the
+normal profile's `settings.json` with `model` overridden by the gateway's own
+— read first, so a value persisted by native `/model` survives the rewrite. A
+non-model preference changed inside a Jackal session does not persist: normal
+Claude owns it, and the file is rebuilt from the normal profile on the next
+launch. A malformed normal `settings.json` exits naming that file rather than
+falling back to a model-only gateway file, which would silently drop the
+user's permissions.
+
+**A gateway from the earlier, fully isolated build is migrated on its next
+launch.** It has real files where links now belong. Jackal renames each one
+aside as `<entry>.jackal-isolated.bak` and links the shared entry in its
+place, printing one summary line, so the fix reaches gateways that already
+existed, not just new ones — nothing is deleted, and an entry that's already a
+link is left alone. Where symbolic links can't be created — notably Windows
+without Developer Mode or administrator rights — jackal reports one line and
+launches anyway; model isolation does not depend on links.
 
 ## Talking to the gateway
 
