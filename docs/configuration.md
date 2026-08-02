@@ -38,18 +38,18 @@ gateway saved before this profile isolation shipped and not yet launched since
 itself writes there, seeded by `--setup` with a `settings.json` holding the
 chosen model.
 
-Up to three environment variables are set, for one process only:
+Up to four environment variables are set, for one process only:
 
 | Variable | Purpose |
 |---|---|
 | `ANTHROPIC_BASE_URL` | points Claude Code at your gateway |
 | `ANTHROPIC_AUTH_TOKEN` | bearer token sent to it |
 | `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | set to `1` unless the gateway file overrides it; makes `/model` list what the gateway serves |
+| `CLAUDE_CONFIG_DIR` | set to the gateway's `claude/<name>/` directory, so Claude Code reads and writes only that gateway's isolated profile |
 
-`jackal` also sets `CLAUDE_CONFIG_DIR` to the gateway's `claude/<name>/`
-directory, and removes any `ANTHROPIC_MODEL` inherited from the parent shell
-or a legacy gateway file, so Claude Code reads and writes only that gateway's
-isolated profile. They're set immediately before `os.execv`, which
+`jackal` also removes any `ANTHROPIC_MODEL` inherited from the parent shell or
+a legacy gateway file, so neither can redirect a launch away from the isolated
+profile's stored model. They're set immediately before `os.execv`, which
 **replaces** the jackal process rather than spawning a child — so `claude`
 inherits them directly, and no wrapper process lingers. They apply to that one
 process and nothing else: no `export` in your shell rc, no leakage into other
@@ -73,7 +73,7 @@ with:
      1  Claude Opus 4.6     claude-opus-4-6
      2  Claude Sonnet 4.6   claude-sonnet-4-6
      3  Claude Haiku 4.5    claude-haiku-4-5
-    number, model id, or blank to skip
+    number or model id (required)
     ›
 ```
 
