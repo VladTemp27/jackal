@@ -94,6 +94,19 @@ class JackalTest(unittest.TestCase):
             "data = json.loads(settings.read_text()) if settings.is_file() else {}\n"
             "persistent = data.get('model', '')\n"
             "effective = os.environ.get('ANTHROPIC_MODEL') or persistent\n"
+            "if '--fake-barrier' in args:\n"
+            "    i = args.index('--fake-barrier')\n"
+            "    barrier = Path(args[i + 1])\n"
+            "    participant = args[i + 2]\n"
+            "    barrier.mkdir(parents=True, exist_ok=True)\n"
+            "    (barrier / (participant + '.ready')).write_text('ready' + chr(10))\n"
+            "    release = barrier / 'release'\n"
+            "    import time\n"
+            "    deadline = time.monotonic() + 10\n"
+            "    while not release.exists() and time.monotonic() < deadline:\n"
+            "        time.sleep(0.02)\n"
+            "    if not release.exists():\n"
+            "        raise SystemExit('barrier timeout')\n"
             "if '--fake-persist-model' in args:\n"
             "    model = args[args.index('--fake-persist-model') + 1]\n"
             "    data['model'] = model\n"
@@ -102,12 +115,16 @@ class JackalTest(unittest.TestCase):
             "    persistent = effective = model\n"
             "if '--fake-session-model' in args:\n"
             "    effective = args[args.index('--fake-session-model') + 1]\n"
-            "print('CLAUDE args=[%s] url=[%s] toklen=[%d] model=[%s] discovery=[%s] config=[%s] persistent=[%s] effective=[%s]'\n"
+            "project_settings = Path.cwd() / '.claude' / 'settings.json'\n"
+            "project_mcp = Path.cwd() / '.mcp.json'\n"
+            "project_memory = Path.cwd() / 'CLAUDE.md'\n"
+            "print('CLAUDE args=[%s] url=[%s] toklen=[%d] model=[%s] discovery=[%s] config=[%s] persistent=[%s] effective=[%s] project_settings=[%d] project_mcp=[%d] project_memory=[%d]'\n"
             "      % (' '.join(args), os.environ.get('ANTHROPIC_BASE_URL', ''),\n"
             "         len(os.environ.get('ANTHROPIC_AUTH_TOKEN', '')),\n"
             "         os.environ.get('ANTHROPIC_MODEL', ''),\n"
             "         os.environ.get('CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY', ''),\n"
-            "         config_dir, persistent, effective))\n"
+            "         config_dir, persistent, effective,\n"
+            "         project_settings.is_file(), project_mcp.is_file(), project_memory.is_file()))\n"
         )
         if os.name == "nt":
             (bindir / "claude_stub.py").write_text(body)
@@ -357,6 +374,7 @@ class JackalTest(unittest.TestCase):
         update_check=False,
         update_url=None,
         system_path=None,
+        cwd=None,
     ):
         """Run with stdout as a pipe — i.e. not a tty."""
         return subprocess.run(
@@ -372,6 +390,18 @@ class JackalTest(unittest.TestCase):
             stdin=subprocess.DEVNULL,
             check=False,
             timeout=60,  # a prompt that blocks should fail the suite, not stall CI
+            cwd=cwd,
+        )
+
+    def run_fake_claude(self, *args):
+        """Invoke the stub `claude` directly, with normal (non-gateway) user state."""
+        return subprocess.run(
+            [str(self.home / "bin" / ("claude.cmd" if os.name == "nt" else "claude")), *args],
+            env=self.env(),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
         )
 
     @staticmethod
@@ -1202,6 +1232,94 @@ class JackalTest(unittest.TestCase):
         )
         r = self.run_piped("--gateway", "../victim", "-p", "hi")
         self.assertNotEqual(r.returncode, 0)
+
+    def test_persisted_model_is_scoped_per_gateway(self):
+        normal = self.home / ".claude" / "settings.json"
+        normal.parent.mkdir(parents=True)
+        normal.write_text(json.dumps({"model": "normal-sonnet", "theme": "dark"}, indent=2) + "\n")
+        before = normal.read_bytes()
+        self.seed_named("work", "https://work.test", "tok_w", model="work-old")
+        self.seed_named("personal", "https://personal.test", "tok_p", model="personal-old")
+
+        work = self.run_piped("--gateway", "work", "--fake-persist-model", "work-new")
+        personal = self.run_piped("--gateway", "personal", "--fake-persist-model", "personal-new")
+        reopen_work = self.run_piped("--gateway", "work", "-p", "hi")
+        reopen_personal = self.run_piped("--gateway", "personal", "-p", "hi")
+        direct = self.run_fake_claude()
+
+        self.assertEqual(work.returncode, 0, work.stdout + work.stderr)
+        self.assertEqual(personal.returncode, 0, personal.stdout + personal.stderr)
+        self.assertIn("effective=[work-new]", reopen_work.stdout)
+        self.assertIn("effective=[personal-new]", reopen_personal.stdout)
+        self.assertIn("effective=[normal-sonnet]", direct.stdout)
+        self.assertEqual(normal.read_bytes(), before)
+
+    def test_session_only_model_does_not_replace_gateway_default(self):
+        self.seed_named("work", "https://work.test", "tok_w", model="work-default")
+        temporary = self.run_piped(
+            "--gateway", "work", "--fake-session-model", "work-temporary"
+        )
+        reopened = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertIn("effective=[work-temporary]", temporary.stdout)
+        self.assertIn("effective=[work-default]", reopened.stdout)
+        self.assertEqual(
+            json.loads(self.gateway_settings("work").read_text())["model"],
+            "work-default",
+        )
+
+    def test_concurrent_gateways_cannot_cross_write_models(self):
+        self.seed_named("work", "https://work.test", "tok_w", model="work-old")
+        self.seed_named("personal", "https://personal.test", "tok_p", model="personal-old")
+        barrier = self.tmp / "barrier"
+        commands = [
+            ("work", "work-new"),
+            ("personal", "personal-new"),
+        ]
+        processes = [
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    str(JACKAL),
+                    "--gateway",
+                    gateway,
+                    "--fake-barrier",
+                    str(barrier),
+                    gateway,
+                    "--fake-persist-model",
+                    model,
+                ],
+                env=self.env(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for gateway, model in commands
+        ]
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if all((barrier / f"{gateway}.ready").exists() for gateway, _ in commands):
+                break
+            time.sleep(0.02)
+        else:
+            self.fail("fake Claude processes did not reach the barrier")
+        (barrier / "release").write_text("go\n")
+        for process in processes:
+            stdout, stderr = process.communicate(timeout=10)
+            self.assertEqual(process.returncode, 0, stdout + stderr)
+        self.assertEqual(json.loads(self.gateway_settings("work").read_text())["model"], "work-new")
+        self.assertEqual(json.loads(self.gateway_settings("personal").read_text())["model"], "personal-new")
+
+    def test_project_claude_configuration_remains_visible(self):
+        project = self.tmp / "project"
+        (project / ".claude").mkdir(parents=True)
+        (project / ".claude" / "settings.json").write_text('{"permissions": {}}\n')
+        (project / ".mcp.json").write_text("{}\n")
+        (project / "CLAUDE.md").write_text("project instructions\n")
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
+        r = self.run_piped("--gateway", "work", "-p", "hi", cwd=project)
+        self.assertIn("project_settings=[1]", r.stdout)
+        self.assertIn("project_mcp=[1]", r.stdout)
+        self.assertIn("project_memory=[1]", r.stdout)
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_update_notice_shown_for_newer_cached_version(self):
