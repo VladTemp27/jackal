@@ -3,6 +3,7 @@
 - [Compatibility](#compatibility)
 - [Windows: "python3 is not recognized"](#windows-python3-is-not-recognized)
 - [Error messages](#error-messages)
+- [Model and configuration](#model-and-configuration)
 - [Known limits](#known-limits)
 
 ## Compatibility
@@ -45,6 +46,19 @@ Copy-Item (Get-Command python).Source (Join-Path (Split-Path (Get-Command python
 | `token required — nothing saved` | Empty token at the prompt. Nothing is written; any previous config is left intact. |
 | `jackal: no gateway named '<name>' — see jackal --list` | `use`, `--gateway`, or `--remove` named a gateway that isn't saved. |
 | `` jackal: multiple gateways saved, no default set — run `jackal use <name>` `` | Bare `jackal` with 2+ saved gateways and no default — run `jackal use <name>` to pick one. |
+
+## Model and configuration
+
+### Gateway needs a model after upgrading
+
+Run `jackal --gateway <name>` in a terminal once and choose or type a model.
+Headless launches refuse to guess.
+
+### Reset one gateway's Claude profile
+
+Back up and remove only `~/.jackal/claude/<name>/`, then run that gateway
+interactively to select a model again. Do not remove `~/.claude` or
+`~/.claude.json`; those belong to ordinary Claude.
 
 ## Known limits
 

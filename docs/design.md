@@ -59,6 +59,21 @@ setup can talk to the network.
 so `--version` cannot disagree with what npm published. Hardcoding it once put
 two different builds under the same version number.
 
+## Per-gateway Claude profiles
+
+Claude Code persists `/model` defaults to the active user settings file. A
+process-only `ANTHROPIC_MODEL` selects launch behavior but cannot stop that
+write, and snapshot/restore would race concurrent Claude sessions. Jackal
+therefore sets a stable `CLAUDE_CONFIG_DIR` per gateway. This moves the write
+boundary before it happens and preserves the direct `execv` handoff.
+
+Fully isolated profiles were chosen deliberately over a filtered shared
+overlay. A shared `~/.claude` with just the model field carved out would still
+need every other field — history, credentials, MCP config — reasoned about for
+cross-gateway leakage on every future Claude Code release, and a filter is
+exactly the kind of thing that silently stops matching a new field. A whole
+directory per gateway needs no filter to go stale.
+
 ## Talking to the gateway
 
 **The model fetch catches `Exception`, deliberately.** Its contract is that it

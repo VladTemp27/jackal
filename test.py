@@ -396,7 +396,12 @@ class JackalTest(unittest.TestCase):
     def run_fake_claude(self, *args):
         """Invoke the stub `claude` directly, with normal (non-gateway) user state."""
         return subprocess.run(
-            [str(self.home / "bin" / ("claude.cmd" if os.name == "nt" else "claude")), *args],
+            [
+                str(
+                    self.home / "bin" / ("claude.cmd" if os.name == "nt" else "claude")
+                ),
+                *args,
+            ],
             env=self.env(),
             capture_output=True,
             text=True,
@@ -769,7 +774,9 @@ class JackalTest(unittest.TestCase):
         url, _ = self.models_server()
         out, code = self.run_pty(inputs=["testgw", url, "tok_abc123", "2"], args=[])
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-two")
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-two"
+        )
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
         self.assertIn("Gateway Two", out)
         self.assertNotIn("tok_abc123", out)
@@ -848,7 +855,8 @@ class JackalTest(unittest.TestCase):
         self.assertIn("HTTP 404", out, "the skip should say why")
         self.assertEqual(code, 0, "a missing endpoint must not fail setup")
         self.assertEqual(
-            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-manual"
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            "gw-manual",
         )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
@@ -861,7 +869,8 @@ class JackalTest(unittest.TestCase):
         self.assertIn("enter a model id manually", out)
         self.assertEqual(code, 0)
         self.assertEqual(
-            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-manual"
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            "gw-manual",
         )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
@@ -895,7 +904,8 @@ class JackalTest(unittest.TestCase):
         self.assertNotIn("Traceback", out)
         self.assertEqual(code, 0)
         self.assertEqual(
-            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-manual"
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            "gw-manual",
         )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
@@ -911,7 +921,8 @@ class JackalTest(unittest.TestCase):
         self.assertNotIn("Traceback", out)
         self.assertEqual(code, 0)
         self.assertEqual(
-            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-manual"
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            "gw-manual",
         )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
@@ -929,7 +940,8 @@ class JackalTest(unittest.TestCase):
         self.assertIn("larger than", out)
         self.assertEqual(code, 0)
         self.assertEqual(
-            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-manual"
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            "gw-manual",
         )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
@@ -1068,7 +1080,8 @@ class JackalTest(unittest.TestCase):
         self.assertIn("tok_a", self.gateway_body())
         self.assertEqual(code, 0)
         self.assertEqual(
-            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-manual"
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            "gw-manual",
         )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
@@ -1106,9 +1119,7 @@ class JackalTest(unittest.TestCase):
             self.home / ".jackal" / "claude",
             self.home / ".jackal" / "claude" / "testgw",
         ):
-            self.assertEqual(
-                stat.S_IMODE(d.stat().st_mode), 0o700, f"{d} is not 0700"
-            )
+            self.assertEqual(stat.S_IMODE(d.stat().st_mode), 0o700, f"{d} is not 0700")
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_control_characters_stripped_from_display_name(self):
@@ -1155,7 +1166,9 @@ class JackalTest(unittest.TestCase):
 
     def test_legacy_model_seeds_settings_and_is_removed_from_env(self):
         path = self.seed_named("work", "https://work.test", "tok_w", model=None)
-        path.write_text(path.read_text() + "ANTHROPIC_MODEL=legacy-model\nCUSTOM_FLAG=keep-me\n")
+        path.write_text(
+            path.read_text() + "ANTHROPIC_MODEL=legacy-model\nCUSTOM_FLAG=keep-me\n"
+        )
         path.chmod(0o600)
         r = self.run_piped("--gateway", "work", "-p", "hi")
         self.assertEqual(r.returncode, 0)
@@ -1166,7 +1179,9 @@ class JackalTest(unittest.TestCase):
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_existing_isolated_model_wins_over_legacy_pin(self):
-        path = self.seed_named("work", "https://work.test", "tok_w", model="native-choice")
+        path = self.seed_named(
+            "work", "https://work.test", "tok_w", model="native-choice"
+        )
         path.write_text(path.read_text() + "ANTHROPIC_MODEL=stale-pin\n")
         r = self.run_piped("--gateway", "work", "-p", "hi")
         self.assertEqual(r.returncode, 0)
@@ -1188,7 +1203,9 @@ class JackalTest(unittest.TestCase):
         out, code = self.run_pty(inputs=["2"], args=["-p", "hi"])
         self.assertEqual(code, 0)
         self.assertTrue(seen)
-        self.assertEqual(json.loads(self.gateway_settings("work").read_text())["model"], "gw-two")
+        self.assertEqual(
+            json.loads(self.gateway_settings("work").read_text())["model"], "gw-two"
+        )
         self.assertIn("persistent=[gw-two]", out)
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
@@ -1198,7 +1215,10 @@ class JackalTest(unittest.TestCase):
         out, code = self.run_pty(inputs=["manual-model"], args=["-p", "hi"])
         self.assertEqual(code, 0)
         self.assertIn("enter a model id manually", out)
-        self.assertEqual(json.loads(self.gateway_settings("work").read_text())["model"], "manual-model")
+        self.assertEqual(
+            json.loads(self.gateway_settings("work").read_text())["model"],
+            "manual-model",
+        )
 
     def test_malformed_gateway_settings_are_not_overwritten(self):
         self.seed_named("work", "https://work.test", "tok_w", model=None)
@@ -1236,13 +1256,19 @@ class JackalTest(unittest.TestCase):
     def test_persisted_model_is_scoped_per_gateway(self):
         normal = self.home / ".claude" / "settings.json"
         normal.parent.mkdir(parents=True)
-        normal.write_text(json.dumps({"model": "normal-sonnet", "theme": "dark"}, indent=2) + "\n")
+        normal.write_text(
+            json.dumps({"model": "normal-sonnet", "theme": "dark"}, indent=2) + "\n"
+        )
         before = normal.read_bytes()
         self.seed_named("work", "https://work.test", "tok_w", model="work-old")
-        self.seed_named("personal", "https://personal.test", "tok_p", model="personal-old")
+        self.seed_named(
+            "personal", "https://personal.test", "tok_p", model="personal-old"
+        )
 
         work = self.run_piped("--gateway", "work", "--fake-persist-model", "work-new")
-        personal = self.run_piped("--gateway", "personal", "--fake-persist-model", "personal-new")
+        personal = self.run_piped(
+            "--gateway", "personal", "--fake-persist-model", "personal-new"
+        )
         reopen_work = self.run_piped("--gateway", "work", "-p", "hi")
         reopen_personal = self.run_piped("--gateway", "personal", "-p", "hi")
         direct = self.run_fake_claude()
@@ -1269,7 +1295,9 @@ class JackalTest(unittest.TestCase):
 
     def test_concurrent_gateways_cannot_cross_write_models(self):
         self.seed_named("work", "https://work.test", "tok_w", model="work-old")
-        self.seed_named("personal", "https://personal.test", "tok_p", model="personal-old")
+        self.seed_named(
+            "personal", "https://personal.test", "tok_p", model="personal-old"
+        )
         barrier = self.tmp / "barrier"
         commands = [
             ("work", "work-new"),
@@ -1306,8 +1334,13 @@ class JackalTest(unittest.TestCase):
         for process in processes:
             stdout, stderr = process.communicate(timeout=10)
             self.assertEqual(process.returncode, 0, stdout + stderr)
-        self.assertEqual(json.loads(self.gateway_settings("work").read_text())["model"], "work-new")
-        self.assertEqual(json.loads(self.gateway_settings("personal").read_text())["model"], "personal-new")
+        self.assertEqual(
+            json.loads(self.gateway_settings("work").read_text())["model"], "work-new"
+        )
+        self.assertEqual(
+            json.loads(self.gateway_settings("personal").read_text())["model"],
+            "personal-new",
+        )
 
     def test_project_claude_configuration_remains_visible(self):
         project = self.tmp / "project"
