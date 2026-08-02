@@ -27,6 +27,17 @@ MODELS_MAX_ID = 200
 # and wall clock are bounded separately; MODELS_DEADLINE covers the latter.
 MODELS_MAX_BYTES = 2 * 1024 * 1024
 
+_CLAUDE_MODEL_CLOAK = "claude-fable-5-dd-"
+
+
+def _display_model_id(mid):
+    """CLIProxyAPI's original model id when cloaked, otherwise mid."""
+    if mid.startswith(_CLAUDE_MODEL_CLOAK):
+        encoded = mid[len(_CLAUDE_MODEL_CLOAK) :]
+        if encoded:
+            return encoded[::-1]
+    return mid
+
 
 def _printable(s):
     """s with control characters removed."""
@@ -164,7 +175,7 @@ def choose_model(models, w, tty_in, c):
     for i, m in enumerate(models, 1):
         w(
             f"    {c['C']}{i:>2}{c['Z']}  {m['display_name']:<{pad}}"
-            f"   {c['D']}{m['id']}{c['Z']}\n"
+            f"   {c['D']}{_display_model_id(m['id'])}{c['Z']}\n"
         )
     w(f"    {c['D']}number, model id, or blank to skip{c['Z']}\n")
     w(f"    {c['D']}›{c['Z']} ")
@@ -183,4 +194,9 @@ def choose_model(models, w, tty_in, c):
         # later as an opaque error from Claude Code.
         w(f"    {c['D']}no entry {n} — no model pinned{c['Z']}\n")
         return None
+    # Check if typed answer matches any displayed (clean) model ID. If so,
+    # return the original (cloaked) ID for routing. Unlisted typed IDs pass through.
+    for m in models:
+        if answer == _display_model_id(m["id"]):
+            return m["id"]
     return answer

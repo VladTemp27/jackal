@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from .gateways import JACKAL_DIR, gateway_path, read_current, valid_name, write_current
-from .models import choose_model, fetch_models, usable_model
+from .models import _display_model_id, choose_model, fetch_models, usable_model
 from .terminal import colors
 
 
@@ -102,6 +102,6 @@ def run_setup(out, tty_in):
         f'\n\n  {c["G"]}✓{c["Z"]}  saved gateway "{name}"  {c["D"]}(0600, {len(token)} chars){c["Z"]}\n'
     )
     if model:
-        w(f"  {c['D']}   launch model {model}{c['Z']}\n")
+        w(f"  {c['D']}   launch model {_display_model_id(model)}{c['Z']}\n")
     w("\n")
     return name
