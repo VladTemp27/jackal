@@ -1376,6 +1376,145 @@ class JackalTest(unittest.TestCase):
         self.assertIn("project_mcp=[1]", r.stdout)
         self.assertIn("project_memory=[1]", r.stdout)
 
+    # -- profile sharing: link the normal profile into every gateway ------
+
+    @unittest.skipUnless(POSIX, "symlink creation needs elevated rights on Windows")
+    def test_normal_profile_entries_are_linked_into_gateway(self):
+        """An agent, plugin, rule, and CLAUDE.md in the normal profile are
+        reachable from a gateway — a gateway is a different model, not a
+        different Claude."""
+        claude_dir = self.home / ".claude"
+        (claude_dir / "agents").mkdir(parents=True)
+        (claude_dir / "agents" / "reviewer.md").write_text("agent sentinel\n")
+        (claude_dir / "plugins").mkdir()
+        (claude_dir / "plugins" / "marker.json").write_text("{}\n")
+        (claude_dir / "rules").mkdir()
+        (claude_dir / "rules" / "style.md").write_text("rule sentinel\n")
+        (claude_dir / "CLAUDE.md").write_text("global memory sentinel\n")
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        gdir = self.home / ".jackal" / "claude" / "work"
+        self.assertTrue((gdir / "agents").is_symlink())
+        self.assertEqual(
+            (gdir / "agents" / "reviewer.md").read_text(), "agent sentinel\n"
+        )
+        self.assertTrue((gdir / "plugins").is_symlink())
+        self.assertTrue((gdir / "rules").is_symlink())
+        self.assertEqual((gdir / "rules" / "style.md").read_text(), "rule sentinel\n")
+        self.assertTrue((gdir / "CLAUDE.md").is_symlink())
+        self.assertEqual((gdir / "CLAUDE.md").read_text(), "global memory sentinel\n")
+
+    @unittest.skipUnless(POSIX, "symlink creation needs elevated rights on Windows")
+    def test_claude_json_links_to_normal_profile(self):
+        """~/.claude.json lives outside ~/.claude in normal Claude, but Claude
+        expects it inside CLAUDE_CONFIG_DIR — so personal MCP servers and
+        login state need their own explicit link."""
+        (self.home / ".claude.json").write_text('{"mcpServers": {"x": {}}}\n')
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        link = self.home / ".jackal" / "claude" / "work" / ".claude.json"
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(link.read_text(), '{"mcpServers": {"x": {}}}\n')
+
+    @unittest.skipUnless(POSIX, "symlink creation needs elevated rights on Windows")
+    def test_new_normal_profile_entry_linked_on_next_launch(self):
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
+        r1 = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r1.returncode, 0, r1.stdout + r1.stderr)
+        gdir = self.home / ".jackal" / "claude" / "work"
+        self.assertFalse((gdir / "skills").exists())
+        skills = self.home / ".claude" / "skills"
+        skills.mkdir(parents=True)
+        (skills / "new.md").write_text("new skill\n")
+        r2 = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
+        self.assertTrue((gdir / "skills").is_symlink())
+        self.assertEqual((gdir / "skills" / "new.md").read_text(), "new skill\n")
+
+    def test_gateway_settings_is_never_a_symlink(self):
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        settings = self.gateway_settings("work")
+        self.assertTrue(settings.is_file())
+        self.assertFalse(settings.is_symlink())
+
+    def test_normal_permissions_and_hooks_share_while_model_stays_gateways(self):
+        normal = self.home / ".claude" / "settings.json"
+        normal.parent.mkdir(parents=True)
+        normal.write_text(
+            json.dumps(
+                {
+                    "model": "normal-sonnet",
+                    "permissions": {"allow": ["Bash(git *)"]},
+                    "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": []}]},
+                    "enabledPlugins": ["foo"],
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-model")
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        merged = json.loads(self.gateway_settings("work").read_text())
+        self.assertEqual(merged["model"], "gw-model")
+        self.assertEqual(merged["permissions"], {"allow": ["Bash(git *)"]})
+        self.assertEqual(
+            merged["hooks"], {"PreToolUse": [{"matcher": "Bash", "hooks": []}]}
+        )
+        self.assertEqual(merged["enabledPlugins"], ["foo"])
+
+    def test_gateway_settings_non_model_change_does_not_survive_relaunch(self):
+        normal = self.home / ".claude" / "settings.json"
+        normal.parent.mkdir(parents=True)
+        normal.write_text(json.dumps({"permissions": {"allow": []}}, indent=2) + "\n")
+        before = normal.read_bytes()
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-model")
+        # Simulate a non-model preference landing in the gateway's isolated
+        # settings.json, the way a stray write there might.
+        gw_settings = self.gateway_settings("work")
+        data = json.loads(gw_settings.read_text())
+        data["statusLine"] = {"type": "command", "command": "gateway-only"}
+        gw_settings.write_text(json.dumps(data, indent=2) + "\n")
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        merged = json.loads(gw_settings.read_text())
+        self.assertNotIn("statusLine", merged)
+        self.assertEqual(merged["model"], "gw-model")
+        self.assertEqual(normal.read_bytes(), before)
+
+    @unittest.skipUnless(POSIX, "symlink creation needs elevated rights on Windows")
+    def test_existing_real_entry_in_gateway_dir_is_not_replaced(self):
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
+        gdir = self.home / ".jackal" / "claude" / "work"
+        gdir.mkdir(parents=True, exist_ok=True)
+        real_agents = gdir / "agents"
+        real_agents.mkdir()
+        (real_agents / "mine.md").write_text("gateway-local agent\n")
+        normal_agents = self.home / ".claude" / "agents"
+        normal_agents.mkdir(parents=True)
+        (normal_agents / "shared.md").write_text("shared agent\n")
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(real_agents.is_symlink())
+        self.assertEqual((real_agents / "mine.md").read_text(), "gateway-local agent\n")
+        self.assertFalse((real_agents / "shared.md").exists())
+
+    def test_malformed_normal_settings_exits_and_leaves_gateway_file_unchanged(self):
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
+        normal = self.home / ".claude" / "settings.json"
+        normal.parent.mkdir(parents=True)
+        normal.write_bytes(b'{"permissions": ')
+        gw_settings = self.gateway_settings("work")
+        before = gw_settings.read_bytes()
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(str(normal), r.stdout + r.stderr)
+        self.assertEqual(gw_settings.read_bytes(), before)
+
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_update_notice_shown_for_newer_cached_version(self):
         self.seed("https://x.test", "t")

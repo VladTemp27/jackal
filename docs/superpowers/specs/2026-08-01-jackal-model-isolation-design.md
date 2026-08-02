@@ -2,7 +2,9 @@
 
 ## Status
 
-Approved design, pending implementation planning.
+Approved and implemented.
+
+Revised after implementation: the first version isolated the entire Claude user profile, which stripped gateways of personal MCP servers, agents, plugins, hooks, permissions, and login state. Isolation is now scoped to `settings.json`, the only file that carries the model.
 
 ## Problem
 
@@ -26,13 +28,14 @@ The existing `ANTHROPIC_MODEL` launch pin is not a complete solution. It changes
 5. Existing gateways with `ANTHROPIC_MODEL` migrate without losing their selected model.
 6. Existing gateways without a model require an explicit selection after upgrade.
 7. Repository-local Claude configuration continues to apply inside Jackal sessions.
-8. POSIX retains the current `os.execv` handoff; Windows retains its wait-and-propagate behavior.
-9. The implementation uses only the Python standard library and the existing module structure.
+8. Everything in the Claude user profile except the model — agents, skills, plugins, personal MCP servers, hooks, permissions, global `CLAUDE.md`, history, and login state — stays shared with normal Claude and is never copied or synchronized.
+9. POSIX retains the current `os.execv` handoff; Windows retains its wait-and-propagate behavior.
+10. The implementation uses only the Python standard library and the existing module structure.
 
 ## Non-goals
 
-1. Sharing normal Claude's user-level hooks, agents, skills, plugins, permissions, history, login state, or other user-profile data with Jackal.
-2. Synchronizing non-model user preferences between normal Claude and gateway profiles.
+1. Giving a gateway its own hooks, agents, skills, plugins, permissions, history, or login state. Those stay owned by the normal Claude profile and are shared into every gateway.
+2. Writing non-model user preferences back from a gateway to the normal Claude profile. Jackal only ever reads them.
 3. Repairing a normal Claude model that may already have been changed by an earlier Jackal session.
 4. Replacing Claude's native `/model` picker with a Jackal-specific in-session picker.
 5. Defining stronger conflict semantics than normal last-writer-wins behavior for two concurrent sessions using the same gateway.
@@ -40,7 +43,7 @@ The existing `ANTHROPIC_MODEL` launch pin is not a complete solution. It changes
 
 ## Decision
 
-Give each gateway a stable, fully isolated Claude user configuration directory:
+Give each gateway its own Claude user configuration directory, but isolate only the one file that carries the model. Everything else in the directory is a symbolic link back to the normal Claude profile:
 
 ```text
 ~/.jackal/
@@ -49,23 +52,17 @@ Give each gateway a stable, fully isolated Claude user configuration directory:
   current
   claude/
     work/
-      settings.json
-      .claude.json
-      .credentials.json
-      agents/
-      skills/
-      plugins/
-      rules/
-      ...
+      settings.json        # real file, gateway-owned, holds this gateway's model
+      .claude.json      -> ~/.claude.json
+      .credentials.json -> ~/.claude/.credentials.json
+      agents/           -> ~/.claude/agents/
+      plugins/          -> ~/.claude/plugins/
+      rules/            -> ~/.claude/rules/
+      CLAUDE.md         -> ~/.claude/CLAUDE.md
+      ...               -> every other ~/.claude entry
     personal/
-      settings.json
-      .claude.json
-      .credentials.json
-      agents/
-      skills/
-      plugins/
-      rules/
-      ...
+      settings.json        # real file, gateway-owned
+      ...                  # same links
 ```
 
 For a gateway named `work`, Jackal launches Claude with:
@@ -74,9 +71,33 @@ For a gateway named `work`, Jackal launches Claude with:
 CLAUDE_CONFIG_DIR=~/.jackal/claude/work
 ```
 
-Claude therefore persists native `/model` defaults, application state, credentials, personal MCP configuration, and other user-profile data under the gateway directory. Normal Claude continues to use its ordinary user profile. Jackal does not copy, link, merge, restore, or watch normal Claude configuration.
+`CLAUDE_CONFIG_DIR` redirects the whole user profile root, and Claude Code offers no field-level persistence routing, so isolating the model necessarily isolates the file it lives in. Only `settings.json` is therefore gateway-owned. Native `/model` writes there and cannot reach the normal Claude default.
 
-Gateway authentication still comes from the gateway's `ANTHROPIC_AUTH_TOKEN`; the isolated Claude credential store is not populated from normal Claude. Repository-local Claude configuration remains in effect because the working directory is unchanged and project configuration is independent of the user profile root.
+Every other entry is a link, so agents, skills, plugins, personal MCP servers, hooks, login state, and history are the same objects normal Claude uses — live, with no copying, syncing, or drift. A gateway is a different model, not a different Claude.
+
+Gateway authentication still comes from the gateway's `ANTHROPIC_AUTH_TOKEN`, which is independent of the shared Claude credential store. Repository-local Claude configuration remains in effect because the working directory is unchanged and project configuration is independent of the user profile root.
+
+### Gateway `settings.json`
+
+`settings.json` mixes the one key that must be isolated (`model`) with keys that must stay shared (`permissions`, `hooks`, `enabledPlugins`, `statusLine`). Linking the file would restore the original bug; isolating it outright would silently drop permission rules and disable every plugin.
+
+Jackal therefore rewrites the gateway file before each launch:
+
+```text
+gateway settings.json = normal Claude settings.json, with "model" set to the gateway's model
+```
+
+The gateway's model is read from the gateway file first, so a model persisted by native `/model` survives the rewrite. Non-model preferences are read from the normal profile every launch and never written back: normal Claude owns them, and a non-model preference changed inside a Jackal session does not persist.
+
+If the normal `settings.json` is malformed, Jackal exits and names the file. It must not silently fall back to a model-only file, because that would drop the user's `permissions` rules.
+
+### Links
+
+Jackal creates a link for each entry of the normal profile that the gateway directory does not already have, skipping `settings.json`. New entries appearing later are linked on the next launch.
+
+An existing regular file or directory is never replaced, so a gateway created before this behavior keeps whatever it already had; removing the entry restores sharing.
+
+Where symbolic links cannot be created — notably Windows without Developer Mode or administrator rights — Jackal reports one actionable line and launches with whatever links exist. Model isolation does not depend on links, so the gateway still works.
 
 ## Model source of truth
 
@@ -103,7 +124,8 @@ An explicit `--model` argument remains a Claude-supported one-session override a
 5. Write URL and token to `~/.jackal/<name>.env` without `ANTHROPIC_MODEL`.
 6. Create `~/.jackal/claude/<name>/` with restrictive permissions where supported.
 7. Atomically seed the selected model into `~/.jackal/claude/<name>/settings.json`, preserving any unrelated keys if the file already exists.
-8. Launch Claude with the gateway-specific `CLAUDE_CONFIG_DIR`.
+8. Link the normal profile's entries into the gateway directory.
+9. Launch Claude with the gateway-specific `CLAUDE_CONFIG_DIR`.
 
 If the catalogue is unavailable or empty, setup still requires a manually typed model ID. A failed model fetch must not prevent saving a valid manually entered model.
 
@@ -155,6 +177,10 @@ load gateway transport configuration
         +--> discovery opt-out, if configured
         |
         v
+link normal profile entries, except settings.json
+rewrite gateway settings.json = normal settings + gateway model
+        |
+        v
 force CLAUDE_CONFIG_DIR=~/.jackal/claude/NAME
 remove inherited ANTHROPIC_MODEL
 set discovery default with setdefault("1")
@@ -167,9 +193,11 @@ Ordering matters:
 
 1. Migration reads the gateway file before legacy model data can be discarded.
 2. Gateway transport values are loaded.
-3. Jackal forces its own `CLAUDE_CONFIG_DIR`, so a gateway file or parent shell cannot redirect persistence elsewhere.
-4. Jackal removes `ANTHROPIC_MODEL`, including inherited shell values and legacy gateway-file values.
-5. An explicit forwarded `--model` remains intact in Claude's argument list.
+3. The gateway model is read from the gateway `settings.json` before that file is rewritten, so a model persisted by native `/model` is never lost.
+4. Links are created before launch, so an entry added to the normal profile since the last launch is visible in this one.
+5. Jackal forces its own `CLAUDE_CONFIG_DIR`, so a gateway file or parent shell cannot redirect persistence elsewhere.
+6. Jackal removes `ANTHROPIC_MODEL`, including inherited shell values and legacy gateway-file values.
+7. An explicit forwarded `--model` remains intact in Claude's argument list.
 
 ## Native `/model` behavior
 
@@ -195,7 +223,9 @@ Add the minimum helpers needed to:
 - read a valid model from isolated settings;
 - atomically seed or update the model while preserving unrelated JSON keys;
 - find and atomically remove a legacy `ANTHROPIC_MODEL` line;
-- preserve gateway file permissions during migration.
+- preserve gateway file permissions during migration;
+- link the normal profile's entries into a gateway directory, skipping `settings.json` and any name already present;
+- rewrite a gateway `settings.json` from the normal profile's settings plus a given model.
 
 Do not introduce a general settings framework or profile abstraction.
 
@@ -209,6 +239,7 @@ Do not introduce a general settings framework or profile abstraction.
 ### `jackal_lib/launch.py`
 
 - Bootstrap or migrate the selected gateway before loading Claude.
+- Link the normal profile and refresh the gateway `settings.json` before handoff.
 - Force the gateway-specific `CLAUDE_CONFIG_DIR` after gateway configuration is loaded.
 - Remove inherited `ANTHROPIC_MODEL` before handoff.
 - Preserve model discovery behavior.
@@ -233,9 +264,10 @@ All state paths must remain under the test's temporary home.
 
 Update README and configuration/design documentation to state:
 
-- Jackal gateways have isolated Claude user profiles;
+- a gateway isolates the model and shares the rest of the Claude user profile;
 - project-local Claude configuration still applies;
-- user-level hooks, skills, agents, MCP configuration, permissions, plugins, history, and login state are not shared;
+- user-level hooks, skills, agents, MCP configuration, permissions, plugins, history, and login state are shared live through links, so they behave exactly as in normal Claude;
+- a non-model preference changed inside a Jackal session does not persist, because normal Claude owns it;
 - setup and migration require a model;
 - native `/model` Enter persists per gateway and **s** is session-only;
 - `ANTHROPIC_MODEL` is a legacy storage format, not the new source of truth.
@@ -259,6 +291,14 @@ No cross-process lock is required across an interactive session. Different gatew
 ### Malformed isolated settings
 
 Exit with an error naming the exact file. Do not overwrite, delete, reset, or infer a replacement.
+
+### Malformed normal Claude settings
+
+Exit with an error naming the normal profile's file. Never repair it, and never fall back to a model-only gateway file: that would silently drop the user's `permissions` rules.
+
+### Links cannot be created
+
+Report one actionable line naming the entry and the reason, then continue. Model isolation does not depend on links. On Windows this usually means Developer Mode or administrator rights are required.
 
 ### Invalid stored model
 
@@ -308,6 +348,19 @@ Using the stateful fake Claude:
 3. Verify that process reports C.
 4. Reopen the gateway and observe B.
 
+### Profile sharing
+
+Verify that:
+
+- an agent, plugin, rule, and `CLAUDE.md` in the normal profile are visible from a gateway;
+- `.claude.json` resolves to the normal profile's file, so personal MCP servers and login state are shared;
+- an entry added to the normal profile after the gateway was created is linked on the next launch;
+- `settings.json` is a real file, never a link;
+- a `permissions`, `hooks`, or `enabledPlugins` value set in the normal profile is present in the gateway file, while `model` is the gateway's;
+- changing a non-model preference in the gateway file does not survive the next launch, and never reaches the normal profile;
+- an existing regular entry in the gateway directory is not replaced by a link;
+- a malformed normal `settings.json` exits and names that file, leaving the gateway file unchanged.
+
 ### Gateway isolation
 
 - Persist B for `work` and C for `personal`.
@@ -344,7 +397,7 @@ Verify that:
 
 ### Project configuration
 
-Create repository-local `.claude`, `.mcp.json`, and `CLAUDE.md` sentinels and verify the fake Claude can see them while normal user-level profile sentinels are not present in the gateway directory.
+Create repository-local `.claude`, `.mcp.json`, and `CLAUDE.md` sentinels and verify the fake Claude can see them, independently of the shared user-level profile.
 
 ### Corruption and interruption safety
 
@@ -368,10 +421,11 @@ Verify that:
 3. New and migrated gateways have an explicit gateway-local default model.
 4. Normal Claude user-profile files are never opened for mutation by Jackal.
 5. Repository-local Claude configuration remains effective.
-6. Legacy `ANTHROPIC_MODEL` values seed once and no longer override native persistence.
-7. Inherited model/config-directory environment values cannot bypass isolation.
-8. Failure paths preserve existing configuration and never expose tokens.
-9. Existing process-handoff semantics and all unrelated behavior remain unchanged.
+6. A Jackal session sees the same agents, skills, plugins, personal MCP servers, hooks, permissions, and login state as normal Claude, without copying them.
+7. Legacy `ANTHROPIC_MODEL` values seed once and no longer override native persistence.
+8. Inherited model/config-directory environment values cannot bypass isolation.
+9. Failure paths preserve existing configuration and never expose tokens.
+10. Existing process-handoff semantics and all unrelated behavior remain unchanged.
 
 ## Rejected alternatives
 
@@ -379,9 +433,13 @@ Verify that:
 
 Small, but Enter still changes normal Claude. It fails the required native persistent behavior.
 
-### Selective shared overlay
+### Fully isolated profiles
 
-Can approximate sharing normal user configuration while isolating model writes, but Claude has no field-level persistence routing. It creates ownership, synchronization, and future-file maintenance complexity that is unnecessary after choosing fully isolated profiles.
+Isolating the entire user profile is the smallest change and the strongest guarantee, but it silently strips a gateway of everything the user configured: personal MCP servers, agents, plugins, hooks, permissions, global `CLAUDE.md`, and login state. Verified against Claude Code 2.1.220 — `claude mcp list` under a gateway `CLAUDE_CONFIG_DIR` reports no MCP servers at all. A gateway should change the model, not amputate the tool.
+
+### Copying the normal profile into each gateway
+
+Avoids links, so it works without Developer Mode on Windows, but every copy drifts the moment the normal profile changes, and reconciling the two directions is the synchronization problem this design exists to avoid. Only `settings.json` is copied, because its contents cannot be split any other way.
 
 ### Snapshot and restore normal settings
 

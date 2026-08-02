@@ -18,6 +18,15 @@ CURRENT_FILE = JACKAL_DIR / "current"
 OLD_CFG = Path.home() / ".jackal.env"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
+# The normal Claude user profile — read-only to jackal, never written,
+# repaired, or copied. Derived from Path.home() (HOME/USERPROFILE), the same
+# as JACKAL_DIR above, and never from CLAUDE_CONFIG_DIR: jackal overwrites
+# that for its own launches, so it cannot be the source of truth for what
+# "normal Claude" looks like.
+NORMAL_CLAUDE_DIR = Path.home() / ".claude"
+NORMAL_SETTINGS_PATH = NORMAL_CLAUDE_DIR / "settings.json"
+NORMAL_CLAUDE_JSON_PATH = Path.home() / ".claude.json"
+
 
 def valid_name(name):
     """True if name is safe to use as a filename component."""
@@ -129,8 +138,13 @@ def _atomic_write(path, body):
         raise
 
 
-def _read_gateway_settings(name):
-    path = gateway_settings_path(name)
+def _read_json_object(path):
+    """Parse path as a JSON object, or exit naming it. {} if it's absent.
+
+    Shared by the gateway's own settings.json and the normal profile's, so
+    both a malformed isolated file and a malformed normal file are reported
+    the same way: sys.exit naming the exact file, never repaired or replaced.
+    """
     if not path.is_file():
         return {}
     try:
@@ -142,6 +156,10 @@ def _read_gateway_settings(name):
     return data
 
 
+def _read_gateway_settings(name):
+    return _read_json_object(gateway_settings_path(name))
+
+
 def read_gateway_model(name):
     model = _read_gateway_settings(name).get("model")
     return model if isinstance(model, str) else None
@@ -151,6 +169,74 @@ def write_gateway_model(name, model):
     data = _read_gateway_settings(name)
     data["model"] = model
     _atomic_write(gateway_settings_path(name), json.dumps(data, indent=2) + "\n")
+
+
+def _link(target, link_path, failures, *, is_dir=False):
+    """Symlink link_path -> target unless link_path already exists.
+
+    lexists (not exists) so a link_path that is itself a dangling symlink —
+    e.g. a previous run's .claude.json link, before the target was ever
+    written — still counts as "already there" and is left alone. Failures
+    are collected, not raised: one bad entry must not abort the others.
+    """
+    if os.path.lexists(link_path):
+        return
+    try:
+        os.symlink(target, link_path, target_is_directory=is_dir)
+    except OSError as e:
+        failures.append((link_path.name, e))
+
+
+def link_profile(name):
+    """Link the normal Claude profile's entries into a gateway's directory.
+
+    Every entry of ~/.claude except settings.json (the one file that must
+    stay gateway-owned), plus ~/.claude.json, which normal Claude keeps
+    outside ~/.claude but which Claude expects inside CLAUDE_CONFIG_DIR. An
+    entry already present in the gateway directory — a real file/dir from
+    before this behavior, or a link from a prior launch — is left alone, so
+    nothing is ever replaced. Entries added to the normal profile later get
+    linked the next time this runs.
+
+    A link that cannot be created (notably Windows without Developer Mode or
+    admin rights) is not fatal: model isolation does not depend on links, so
+    launch continues with whatever links exist, after one summary warning.
+    """
+    gdir = gateway_claude_dir(name)
+    _mkdir_secure(gdir)
+    failures = []
+    if NORMAL_CLAUDE_DIR.is_dir():
+        for entry in os.listdir(NORMAL_CLAUDE_DIR):
+            if entry == "settings.json":
+                continue
+            target = NORMAL_CLAUDE_DIR / entry
+            _link(target, gdir / entry, failures, is_dir=target.is_dir())
+    _link(NORMAL_CLAUDE_JSON_PATH, gdir / ".claude.json", failures)
+    if failures:
+        first_name, first_err = failures[0]
+        plural = "y" if len(failures) == 1 else "ies"
+        print(
+            f"jackal: could not link {len(failures)} profile entr{plural} into "
+            f"{gdir} (e.g. '{first_name}': {first_err}) — continuing without them",
+            file=sys.stderr,
+        )
+
+
+def rewrite_gateway_settings(name, model):
+    """gateway settings.json := normal profile's settings.json, model set.
+
+    model must already be read from the gateway's own settings.json before
+    this runs (see read_gateway_model / _ensure_gateway_model), so a model
+    persisted by native /model survives this rewrite. Non-model keys —
+    permissions, hooks, enabledPlugins, statusLine — come from the normal
+    profile fresh on every call and are never written back to it: normal
+    Claude owns them, jackal only reads them. A malformed normal
+    settings.json exits naming that file rather than silently dropping the
+    user's permissions rules by falling back to a model-only file.
+    """
+    merged = _read_json_object(NORMAL_SETTINGS_PATH)
+    merged["model"] = model
+    _atomic_write(gateway_settings_path(name), json.dumps(merged, indent=2) + "\n")
 
 
 def write_gateway_config(path, body):

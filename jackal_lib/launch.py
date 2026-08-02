@@ -12,9 +12,11 @@ from .gateways import (
     gateway_claude_dir,
     gateway_path,
     host,
+    link_profile,
     load_config,
     read_gateway_model,
     remove_config_key,
+    rewrite_gateway_settings,
     write_gateway_model,
 )
 from .models import usable_model
@@ -146,7 +148,12 @@ def launch(name, args):
     """Load a gateway's config, show the banner, and hand off to claude."""
     path = gateway_path(name)
     load_config(path)
-    _ensure_gateway_model(name, path)
+    model = _ensure_gateway_model(name, path)
+    # Link the shared profile and refresh settings.json before handoff, so an
+    # entry added to ~/.claude since the last launch is visible in this one,
+    # and the rewritten file carries this launch's resolved model.
+    link_profile(name)
+    rewrite_gateway_settings(name, model)
     # Set after load_config so neither a parent shell nor an editable gateway
     # file can redirect Claude to normal user state: the isolated profile and
     # a cleared ANTHROPIC_MODEL are enforced last, not merely defaulted.
