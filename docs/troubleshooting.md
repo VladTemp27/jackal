@@ -86,6 +86,19 @@ undone first, so the entry ends up back under its original name, not
 stranded at a `.bak` suffix. Enable Developer Mode, or run as administrator,
 then relaunch to pick up the rest.
 
+### "dropped ... from the normal profile's settings copied into gateway"
+
+Not an error. Your `~/.claude/settings.json` sets something that decides where
+requests go or how they authenticate — an `env` entry for `ANTHROPIC_MODEL`,
+`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`,
+`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`, or an `apiKeyHelper`.
+Those are the gateway's to set, so `jackal` leaves them out of the copy it
+writes for the gateway. Otherwise a personal key would be sent to whoever runs
+the gateway, or the session would quietly talk to a different host or backend
+than the banner shows. Everything else in your settings is copied through, and
+your own `~/.claude/settings.json` is never modified — the drop applies only to
+the gateway's copy. Normal `claude` still honours all of it.
+
 ### Reset one gateway's Claude profile
 
 Back up and remove only `~/.jackal/claude/<name>/`, then run that gateway

@@ -336,8 +336,9 @@ def link_profile(name):
         print(
             f"jackal: could not link {len(failures)} profile entr{plural} into "
             f"{gdir} (e.g. '{first_name}': {first_err}) — continuing without "
-            "them; any pre-existing entry among them is untouched, still at "
-            "its original name",
+            "them; except where a restore failure is reported above, any "
+            "pre-existing entry among them is untouched, still at its "
+            "original name",
             file=sys.stderr,
         )
 
@@ -347,10 +348,17 @@ def link_profile(name):
 # launch.py deliberately pops, silently defeating the gateway's pinned
 # model; ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN would redirect gateway
 # traffic — carrying the gateway's own token — to a different host.
+# ANTHROPIC_API_KEY is the same disclosure as ANTHROPIC_AUTH_TOKEN from the
+# other direction: a personal key pinned for normal claude would be sent to
+# whoever runs the gateway. The USE_* flags would switch the session to a
+# different backend entirely, ignoring the gateway this launch exists to reach.
 _JACKAL_OWNED_ENV_KEYS = (
     "ANTHROPIC_MODEL",
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
 )
 
 
@@ -367,7 +375,7 @@ def _strip_owned_settings(merged):
             if key in env:
                 del env[key]
                 dropped.append(f"env.{key}")
-        if not env:
+        if dropped and not env:
             del merged["env"]
     if "apiKeyHelper" in merged:
         del merged["apiKeyHelper"]
