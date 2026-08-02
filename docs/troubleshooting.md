@@ -73,10 +73,18 @@ the shared profile.
 
 Not fatal — Claude still launches, with whatever links exist. One or more
 entries under `~/.claude` couldn't be symlinked into the gateway's directory.
-This is expected on Windows without Developer Mode or administrator rights;
-model isolation does not depend on links, so only the unlinked entries (an
-agent, a plugin, and so on) are affected. Enable Developer Mode, or run as
-administrator, then relaunch to pick up the rest.
+This is expected on Windows without Developer Mode or administrator rights,
+or on a filesystem that refuses symlinks (FAT/exFAT, some network mounts,
+SELinux); model isolation does not depend on links.
+
+Nothing is lost by this. If the entry never existed in the gateway
+directory, it's simply missing for this launch, same as before. If the
+gateway had its own real copy of that entry (left over from the earlier
+fully isolated build), jackal only renames it aside once the link that
+would replace it has actually succeeded — if the link fails, the rename is
+undone first, so the entry ends up back under its original name, not
+stranded at a `.bak` suffix. Enable Developer Mode, or run as administrator,
+then relaunch to pick up the rest.
 
 ### Reset one gateway's Claude profile
 

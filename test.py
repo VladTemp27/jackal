@@ -156,7 +156,12 @@ class JackalTest(unittest.TestCase):
         return ["/usr/bin", "/bin"]
 
     def env(
-        self, with_claude=True, update_check=False, update_url=None, system_path=None
+        self,
+        with_claude=True,
+        update_check=False,
+        update_url=None,
+        system_path=None,
+        extra_env=None,
     ):
         if system_path is None:
             dirs = self._system_path()
@@ -188,7 +193,29 @@ class JackalTest(unittest.TestCase):
             for k in ("SYSTEMROOT", "PATHEXT", "COMSPEC", "TEMP", "TMP"):
                 if k in os.environ:
                     e[k] = os.environ[k]
+        e.update(extra_env or {})
         return e
+
+    def force_symlink_failure(self):
+        """PYTHONPATH for a subprocess run whose every os.symlink call fails.
+
+        A sitecustomize.py on PYTHONPATH is auto-imported by Python at
+        startup (site processing is on by default, and jackal is launched
+        without -S), so this monkeypatches os.symlink before jackal_lib is
+        even imported — without adding any test-only hook to jackal's own
+        source. The suite runs jackal as a subprocess, so an in-process
+        monkeypatch isn't reachable; this is the equivalent for a subprocess
+        harness.
+        """
+        shim_dir = self.tmp / "symlink_shim"
+        shim_dir.mkdir(exist_ok=True)
+        (shim_dir / "sitecustomize.py").write_text(
+            "import os\n"
+            "def _broken_symlink(*a, **k):\n"
+            "    raise OSError('symlinks disabled for this test')\n"
+            "os.symlink = _broken_symlink\n"
+        )
+        return {"PYTHONPATH": str(shim_dir)}
 
     def models_server(self, status=200, pages=None, expect_auth=None):
         """A localhost /v1/models. Returns (base_url, seen).
@@ -379,6 +406,7 @@ class JackalTest(unittest.TestCase):
         update_url=None,
         system_path=None,
         cwd=None,
+        extra_env=None,
     ):
         """Run with stdout as a pipe — i.e. not a tty."""
         return subprocess.run(
@@ -388,6 +416,7 @@ class JackalTest(unittest.TestCase):
                 update_check=update_check,
                 update_url=update_url,
                 system_path=system_path,
+                extra_env=extra_env,
             ),
             capture_output=True,
             text=True,
@@ -1471,6 +1500,65 @@ class JackalTest(unittest.TestCase):
         )
         self.assertEqual(merged["enabledPlugins"], ["foo"])
 
+    def test_env_anthropic_model_is_dropped_from_merged_settings(self):
+        """A persistent `env` block in the normal profile pinning
+        ANTHROPIC_MODEL would, if copied verbatim, resurrect the exact
+        variable launch.py deliberately pops — silently defeating the
+        gateway's own pinned model."""
+        normal = self.home / ".claude" / "settings.json"
+        normal.parent.mkdir(parents=True)
+        normal.write_text(
+            json.dumps(
+                {"env": {"ANTHROPIC_MODEL": "normal-pin", "OTHER_VAR": "keep-me"}},
+                indent=2,
+            )
+            + "\n"
+        )
+        before = normal.read_bytes()
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-model")
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        merged = json.loads(self.gateway_settings("work").read_text())
+        self.assertEqual(merged["model"], "gw-model")
+        self.assertNotIn("ANTHROPIC_MODEL", merged.get("env", {}))
+        self.assertEqual(merged["env"]["OTHER_VAR"], "keep-me")
+        self.assertIn("ANTHROPIC_MODEL", r.stdout + r.stderr)
+        self.assertEqual(normal.read_bytes(), before)
+        # And the pin must not actually reach the process either.
+        self.assertIn("model=[]", r.stdout)
+        self.assertIn("effective=[gw-model]", r.stdout)
+
+    def test_env_gateway_transport_keys_and_api_key_helper_are_dropped(self):
+        """ANTHROPIC_BASE_URL in a copied `env` block would send gateway
+        traffic — carrying the gateway's own token — to a different host;
+        apiKeyHelper could override the gateway's credentials. Both are
+        jackal's alone to set, never the normal profile's."""
+        normal = self.home / ".claude" / "settings.json"
+        normal.parent.mkdir(parents=True)
+        normal.write_text(
+            json.dumps(
+                {
+                    "env": {
+                        "ANTHROPIC_BASE_URL": "https://attacker.test",
+                        "ANTHROPIC_AUTH_TOKEN": "stolen",
+                    },
+                    "apiKeyHelper": "/bin/echo fake-key",
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-model")
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        merged = json.loads(self.gateway_settings("work").read_text())
+        self.assertNotIn("apiKeyHelper", merged)
+        # Both env keys stripped leaves it empty, so the whole block is gone.
+        self.assertNotIn("env", merged)
+        self.assertIn("apiKeyHelper", r.stdout + r.stderr)
+        self.assertIn("ANTHROPIC_BASE_URL", r.stdout + r.stderr)
+        self.assertIn("ANTHROPIC_AUTH_TOKEN", r.stdout + r.stderr)
+
     def test_gateway_settings_non_model_change_does_not_survive_relaunch(self):
         normal = self.home / ".claude" / "settings.json"
         normal.parent.mkdir(parents=True)
@@ -1554,6 +1642,45 @@ class JackalTest(unittest.TestCase):
         self.assertFalse(real.is_symlink())
         self.assertEqual((real / "current.json").read_text(), "current\n")
         self.assertEqual((backup / "earlier.json").read_text(), "earlier backup\n")
+        self.assertIn("plugins", r.stdout + r.stderr)
+        self.assertIn(BACKUP_SUFFIX, r.stdout + r.stderr)
+
+    @unittest.skipUnless(POSIX, "the fault-injection shim patches os.symlink")
+    def test_symlink_failure_leaves_pre_existing_entry_in_place_not_stranded(self):
+        """The point of the rename-then-symlink rollback: a systemic symlink
+        failure (no Developer Mode on Windows, a filesystem that refuses
+        symlinks) must not rename a pre-existing real entry aside and then
+        fail to replace it — that would strand it at the backup name and
+        leave the gateway worse off than before the upgrade, every launch.
+        The entry must still be exactly where it started."""
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
+        gdir = self.home / ".jackal" / "claude" / "work"
+        gdir.mkdir(parents=True, exist_ok=True)
+        real_plugins = gdir / "plugins"
+        real_plugins.mkdir()
+        (real_plugins / "old.json").write_text("old plugin\n")
+        normal_plugins = self.home / ".claude" / "plugins"
+        normal_plugins.mkdir(parents=True)
+        (normal_plugins / "shared.json").write_text("shared plugin\n")
+
+        r = self.run_piped(
+            "--gateway",
+            "work",
+            "-p",
+            "hi",
+            extra_env=self.force_symlink_failure(),
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("could not link", r.stdout + r.stderr)
+        self.assertFalse(real_plugins.is_symlink())
+        self.assertEqual((real_plugins / "old.json").read_text(), "old plugin\n")
+        backup = gdir / ("plugins" + BACKUP_SUFFIX)
+        self.assertFalse(backup.exists(), "original was left stranded at .bak")
+        # settings.json must still get rewritten — model isolation does not
+        # depend on links succeeding.
+        self.assertEqual(
+            json.loads(self.gateway_settings("work").read_text())["model"], "gw-one"
+        )
 
     def test_malformed_normal_settings_exits_and_leaves_gateway_file_unchanged(self):
         self.seed_named("work", "https://work.test", "tok_w", model="gw-one")

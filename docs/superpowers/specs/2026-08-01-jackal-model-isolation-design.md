@@ -91,13 +91,22 @@ The gateway's model is read from the gateway file first, so a model persisted by
 
 If the normal `settings.json` is malformed, Jackal exits and names the file. It must not silently fall back to a model-only file, because that would drop the user's `permissions` rules.
 
+The copy is not entirely verbatim. Two kinds of keys are stripped before the gateway file is written, because Claude Code applies them itself rather than treating them as inert data:
+
+- `env.ANTHROPIC_MODEL`, `env.ANTHROPIC_BASE_URL`, and `env.ANTHROPIC_AUTH_TOKEN` — Claude Code's `env` block is applied persistently across launches. Left in place, `ANTHROPIC_MODEL` there would resurrect the exact variable Jackal deliberately removes before handoff, silently defeating the gateway's pinned model; `ANTHROPIC_BASE_URL` would redirect gateway traffic — carrying the gateway's own `ANTHROPIC_AUTH_TOKEN` — to a different host.
+- `apiKeyHelper` — Anthropic's own gateway guidance tells users to put this in `~/.claude/settings.json` to supply credentials. Gateway authentication always comes from the gateway's own token, never from the normal profile, so this key is dropped rather than allowed to override or conflict with it.
+
+If stripping empties the `env` block entirely, the block itself is removed rather than left as `{}`. Jackal prints one line to stderr naming what was dropped and why, so the user is not left wondering why a setting they wrote isn't taking effect in a gateway session. The normal profile's file is never modified — only the in-memory copy that becomes the gateway's file.
+
 ### Links
 
 Jackal creates a link for each entry of the normal profile that the gateway directory does not already have, skipping `settings.json`. New entries appearing later are linked on the next launch.
 
-An entry that is already a link is left alone. An entry that is a real file or directory is a profile created by the fully isolated build: it is renamed aside with a `.jackal-isolated.bak` suffix and then linked, so those gateways start sharing without losing their old state. Nothing is deleted, and the rename happens once — afterwards the link is what exists. If the backup name is already taken, the entry is left as it is rather than overwriting an earlier backup.
+An entry that is already a link is left alone. An entry that is a real file or directory is a profile created by the fully isolated build: it is renamed aside with a `.jackal-isolated.bak` suffix and then linked, so those gateways start sharing without losing their old state. Nothing is deleted, and the rename happens once — afterwards the link is what exists. If the backup name is already taken, the entry is left as it is (reported once) rather than overwriting an earlier backup.
 
-Where symbolic links cannot be created — notably Windows without Developer Mode or administrator rights — Jackal reports one actionable line and launches with whatever links exist. Model isolation does not depend on links, so the gateway still works.
+The rename and the link are made atomic by hand, per entry: if the link cannot be created, the rename is undone before moving on, restoring the entry exactly as it was under its original name. This matters because a symlink failure is typically systemic, not per-entry — a Windows install without Developer Mode refuses every symlink, not a random few — so without the rollback, every real entry in an upgrading gateway would be renamed aside and none of them relinked: strictly worse than before the upgrade, repeating on every launch. An entry only counts as migrated once the link that replaces it has actually succeeded. If the rollback itself fails, that is reported immediately and loudly, separate from the batched link-failure summary, because it is the one case where the entry really is at the `.bak` name and the user needs to know where to find it.
+
+Where symbolic links cannot be created — notably Windows without Developer Mode or administrator rights, or a filesystem that refuses symlinks (FAT/exFAT, some network mounts, SELinux) — Jackal reports one actionable line and launches with whatever links exist. Model isolation does not depend on links, so the gateway still works, and — because of the rollback above — a pre-existing entry that failed to migrate is left exactly where it was, not stranded.
 
 ## Model source of truth
 
@@ -358,8 +367,11 @@ Verify that:
 - `settings.json` is a real file, never a link;
 - a `permissions`, `hooks`, or `enabledPlugins` value set in the normal profile is present in the gateway file, while `model` is the gateway's;
 - changing a non-model preference in the gateway file does not survive the next launch, and never reaches the normal profile;
+- `env.ANTHROPIC_MODEL` in the normal profile's settings does not reach the gateway file or the launched process, while an unrelated `env` key survives;
+- `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_AUTH_TOKEN`, and `apiKeyHelper` are all dropped from the merge, with one line to stderr naming them;
 - a gateway left over from the isolated build, holding a real `.claude.json` and `plugins/`, ends up with working links and its originals intact under `.jackal-isolated.bak` names;
 - an entry that is already a link is left alone;
+- when linking fails (symlink creation forced to error), a pre-existing real entry that was being migrated is left exactly where it started, under its original name, not stranded at the backup suffix;
 - a malformed normal `settings.json` exits and names that file, leaving the gateway file unchanged.
 
 ### Gateway isolation

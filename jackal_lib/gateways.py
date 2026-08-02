@@ -115,11 +115,18 @@ def _mkdir_secure(path):
     umask-default mode instead (typically 0755). Recurse so every level
     created for a gateway write (~/.jackal, ~/.jackal/claude, the gateway's
     own profile dir) ends up 0700, not just the last one.
+
+    A permission error here would otherwise surface as a raw traceback at
+    launch; sys.exit naming the exact path that failed matches every other
+    "cannot write isolated configuration" error in this module.
     """
     if path.is_dir():
         return
     _mkdir_secure(path.parent)
-    path.mkdir(mode=0o700, exist_ok=True)
+    try:
+        path.mkdir(mode=0o700, exist_ok=True)
+    except OSError as e:
+        sys.exit(f"jackal: could not create '{path}': {e}")
 
 
 def _atomic_write(path, body):
@@ -149,8 +156,17 @@ def _read_json_object(path):
     Shared by the gateway's own settings.json and the normal profile's, so
     both a malformed isolated file and a malformed normal file are reported
     the same way: sys.exit naming the exact file, never repaired or replaced.
+
+    path.is_file() alone can't tell "absent" from "a dangling symlink" —
+    both return False. Treating a dangling symlink as absent would silently
+    fall back to a model-only file, dropping the user's permissions rules,
+    exactly what this function exists to prevent. lexists catches the
+    symlink whether or not its target exists, so only a genuinely missing
+    path returns {}; anything else that isn't a regular file is an error.
     """
     if not path.is_file():
+        if os.path.lexists(path):
+            sys.exit(f"jackal: invalid Claude settings '{path}': not a regular file")
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -176,6 +192,24 @@ def write_gateway_model(name, model):
     _atomic_write(gateway_settings_path(name), json.dumps(data, indent=2) + "\n")
 
 
+def _create_symlink(target, link_path, is_dir):
+    """os.symlink, but a same-target race from a concurrent launch is success.
+
+    lexists-then-symlink is two steps, not one: two launches sharing a
+    gateway can both pass the lexists check before either calls symlink, so
+    the loser sees FileExistsError for an entry that is, in fact, now
+    linked exactly as it wanted. Re-checking islink turns that into a no-op
+    instead of a spurious "could not link" report. Any other failure —
+    including a real pre-existing non-link entry, which callers must rule
+    out before reaching here — still raises.
+    """
+    try:
+        os.symlink(target, link_path, target_is_directory=is_dir)
+    except FileExistsError:
+        if not os.path.islink(link_path):
+            raise
+
+
 def _link(target, link_path, failures, migrated, *, is_dir=False):
     """Symlink link_path -> target, migrating a pre-existing real entry aside.
 
@@ -187,29 +221,67 @@ def _link(target, link_path, failures, migrated, *, is_dir=False):
     A real file or directory already at link_path — a gateway created by the
     earlier fully-isolated build, before entries were links at all — is
     renamed to `<name>BACKUP_SUFFIX` and then replaced by the link, so the
-    fix reaches gateways that already exist, not just new ones. If that
-    backup name is already taken (a previous migration already ran), the
-    entry is left exactly alone rather than clobbering the earlier backup.
-    Once moved aside, a later launch finds a link at link_path and takes the
-    lexists fast path above, so this never runs twice for the same entry.
+    fix reaches gateways that already exist, not just new ones.
 
-    Failures — rename or symlink — are collected, not raised: one bad entry
-    must not abort the others.
+    The rename and the symlink are two separate operations, so this is made
+    all-or-nothing by hand: if the symlink fails (no Developer Mode on
+    Windows, a filesystem that refuses symlinks, a permissions problem),
+    the rename is undone before returning, restoring the exact pre-upgrade
+    state. Without this, a systemic symlink failure — the common case, since
+    one Windows install either allows symlinks or refuses all of them —
+    would rename every entry aside and link none of them: worse than before
+    the upgrade, on every single launch. The entry is only ever counted in
+    `migrated` once both steps have actually succeeded. If the rollback
+    itself fails, that is reported immediately and loudly, because it is
+    the one case where the entry really is stranded at the backup name and
+    the user needs to know where to find it.
+
+    If the backup name is already taken (a previous migration already ran,
+    or something else collided with it), the entry is left exactly alone
+    rather than clobbering the earlier backup — reported once, since the
+    gateway is silently keeping a stale isolated copy otherwise.
+
+    Once moved aside, a later launch finds a link at link_path and takes
+    the lexists fast path above, so migration never runs twice for the same
+    entry. Ordinary link failures (rename, or symlink with no pre-existing
+    entry to protect) are collected, not raised: one bad entry must not
+    abort the others.
     """
     if os.path.lexists(link_path):
         if os.path.islink(link_path):
             return
         backup = link_path.with_name(link_path.name + BACKUP_SUFFIX)
         if os.path.lexists(backup):
+            print(
+                f"jackal: '{link_path}' already has a backup at '{backup.name}' "
+                "from an earlier migration — leaving it as the gateway's own "
+                "copy rather than overwriting that backup",
+                file=sys.stderr,
+            )
             return
         try:
             os.rename(link_path, backup)
         except OSError as e:
             failures.append((link_path.name, e))
             return
+        try:
+            _create_symlink(target, link_path, is_dir)
+        except OSError as e:
+            try:
+                os.rename(backup, link_path)
+            except OSError as rollback_err:
+                print(
+                    f"jackal: could not restore '{link_path}' after a failed "
+                    f"link — your original entry is safe at '{backup}': "
+                    f"{rollback_err}",
+                    file=sys.stderr,
+                )
+            failures.append((link_path.name, e))
+            return
         migrated.append(link_path.name)
+        return
     try:
-        os.symlink(target, link_path, target_is_directory=is_dir)
+        _create_symlink(target, link_path, is_dir)
     except OSError as e:
         failures.append((link_path.name, e))
 
@@ -227,13 +299,24 @@ def link_profile(name):
     A link that cannot be created (notably Windows without Developer Mode or
     admin rights) is not fatal: model isolation does not depend on links, so
     launch continues with whatever links exist, after one summary warning.
+    Being unable to even list ~/.claude is the same story — reported once,
+    not fatal, since it only affects sharing, not the model.
     """
     gdir = gateway_claude_dir(name)
     _mkdir_secure(gdir)
     failures = []
     migrated = []
     if NORMAL_CLAUDE_DIR.is_dir():
-        for entry in os.listdir(NORMAL_CLAUDE_DIR):
+        try:
+            entries = os.listdir(NORMAL_CLAUDE_DIR)
+        except OSError as e:
+            print(
+                f"jackal: could not read '{NORMAL_CLAUDE_DIR}': {e} — linking "
+                "skipped this launch",
+                file=sys.stderr,
+            )
+            entries = []
+        for entry in entries:
             if entry == "settings.json":
                 continue
             target = NORMAL_CLAUDE_DIR / entry
@@ -252,9 +335,44 @@ def link_profile(name):
         plural = "y" if len(failures) == 1 else "ies"
         print(
             f"jackal: could not link {len(failures)} profile entr{plural} into "
-            f"{gdir} (e.g. '{first_name}': {first_err}) — continuing without them",
+            f"{gdir} (e.g. '{first_name}': {first_err}) — continuing without "
+            "them; any pre-existing entry among them is untouched, still at "
+            "its original name",
             file=sys.stderr,
         )
+
+
+# Keys that must never reach a gateway's settings.json from the normal
+# profile: ANTHROPIC_MODEL there would resurrect the exact variable
+# launch.py deliberately pops, silently defeating the gateway's pinned
+# model; ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN would redirect gateway
+# traffic — carrying the gateway's own token — to a different host.
+_JACKAL_OWNED_ENV_KEYS = (
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+)
+
+
+def _strip_owned_settings(merged):
+    """Remove jackal-owned keys from a settings dict copied from the normal
+    profile. Mutates and returns `merged`; the caller's dict is a fresh
+    json.loads() result, so the normal profile's file itself is never
+    touched. Returns what was dropped, for a one-line warning.
+    """
+    dropped = []
+    env = merged.get("env")
+    if isinstance(env, dict):
+        for key in _JACKAL_OWNED_ENV_KEYS:
+            if key in env:
+                del env[key]
+                dropped.append(f"env.{key}")
+        if not env:
+            del merged["env"]
+    if "apiKeyHelper" in merged:
+        del merged["apiKeyHelper"]
+        dropped.append("apiKeyHelper")
+    return dropped
 
 
 def rewrite_gateway_settings(name, model):
@@ -268,9 +386,23 @@ def rewrite_gateway_settings(name, model):
     Claude owns them, jackal only reads them. A malformed normal
     settings.json exits naming that file rather than silently dropping the
     user's permissions rules by falling back to a model-only file.
+
+    A few keys are stripped rather than copied — see _strip_owned_settings —
+    because Claude Code applies them itself: an `env` block persistently,
+    and `apiKeyHelper` for credentials. Gateway auth and the gateway's model
+    are jackal's alone to set; copying either verbatim would let the normal
+    profile silently override them.
     """
     merged = _read_json_object(NORMAL_SETTINGS_PATH)
+    dropped = _strip_owned_settings(merged)
     merged["model"] = model
+    if dropped:
+        print(
+            f"jackal: dropped {', '.join(dropped)} from the normal profile's "
+            f"settings copied into gateway '{name}' — gateway auth and model "
+            "are jackal's, not the normal profile's, to set",
+            file=sys.stderr,
+        )
     _atomic_write(gateway_settings_path(name), json.dumps(merged, indent=2) + "\n")
 
 
