@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from .gateways import JACKAL_DIR, gateway_path, read_current, valid_name, write_current
+from .launch import CLASSIFIER_CHECKED
 from .models import (
     choose_model,
     fetch_models,
@@ -108,6 +109,13 @@ def run_setup(out, tty_in):
     if auto_model:
         body += f"ANTHROPIC_DEFAULT_SONNET_MODEL={auto_model}\n"
         body += f"ANTHROPIC_DEFAULT_OPUS_MODEL={auto_model}\n"
+    else:
+        # Records that auto mode was considered, which absence of the aliases
+        # above cannot: they are equally absent for a gateway serving canonical
+        # claude ids, for a deliberate skip, and for a file saved before any of
+        # this existed. Only the last deserves a warning, so launch needs this
+        # to tell them apart rather than nagging all three.
+        body += f"{CLASSIFIER_CHECKED}=1\n"
 
     JACKAL_DIR.mkdir(mode=0o700, exist_ok=True)
     # O_CREAT with mode 0600 means the file is never briefly world-readable.

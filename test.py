@@ -1119,6 +1119,63 @@ class JackalTest(unittest.TestCase):
         self.assertNotIn("ANTHROPIC_DEFAULT_OPUS_MODEL", body)
         self.assertIn("can't be stored safely", out)
 
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_old_gateway_file_warns_at_launch(self):
+        """The whole point: a file predating auto mode says so, every launch."""
+        self.seed_named("work", "https://work.test", "tok_w")
+        out, _ = self.run_pty(args=["-p", "hi"])
+        self.assertIn("auto mode may be unavailable", out)
+        self.assertIn("jackal --setup", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_native_claude_gateway_does_not_warn(self):
+        """Setup writes no aliases here either — the marker is what separates
+        this from the case above, and a false nag would be forever."""
+        url, _ = self.models_server()
+        self.run_pty(inputs=["testgw", url, "tok_a", "1"], args=[])
+        out, _ = self.run_pty(args=["-p", "hi"])
+        self.assertNotIn("auto mode may be unavailable", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_skipped_auto_mode_does_not_warn_on_later_launches(self):
+        """Skip is an answer, not an omission; nagging would punish choosing it."""
+        url, _ = self.models_server(pages={None: NON_CLAUDE})
+        self.run_pty(inputs=["testgw", url, "tok_a", "", "skip"], args=[])
+        out, _ = self.run_pty(args=["-p", "hi"])
+        self.assertNotIn("auto mode may be unavailable", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_configured_auto_mode_does_not_warn(self):
+        url, _ = self.models_server(pages={None: NON_CLAUDE})
+        self.run_pty(inputs=["testgw", url, "tok_a", "", "1"], args=[])
+        out, _ = self.run_pty(args=["-p", "hi"])
+        self.assertNotIn("auto mode may be unavailable", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_hand_written_aliases_suppress_warning(self):
+        """No marker, but both aliases pinned by hand — already an answer."""
+        path = self.seed_named("work", "https://work.test", "tok_w")
+        path.write_text(
+            path.read_text()
+            + "ANTHROPIC_DEFAULT_SONNET_MODEL=gw-a\n"
+            + "ANTHROPIC_DEFAULT_OPUS_MODEL=gw-b\n"
+        )
+        out, _ = self.run_pty(args=["-p", "hi"])
+        self.assertNotIn("auto mode may be unavailable", out)
+
+    def test_classifier_warning_suppressed_when_piped(self):
+        """Same rule as the banner: keeps `jackal -p ... > file` clean."""
+        self.seed_named("work", "https://work.test", "tok_w")
+        r = self.run_piped("-p", "hi")
+        self.assertNotIn("auto mode may be unavailable", r.stdout)
+
+    def test_marker_is_not_forwarded_as_a_model_alias(self):
+        """The marker must not be mistaken for classifier configuration."""
+        path = self.seed_named("work", "https://work.test", "tok_w")
+        path.write_text(path.read_text() + "JACKAL_CLASSIFIER_CHECKED=1\n")
+        r = self.run_piped("-p", "hi")
+        self.assertIn("sonnet=[] opus=[]", r.stdout)
+
     def test_launch_forwards_saved_classifier_aliases(self):
         path = self.seed_named("work", "https://work.test", "tok_w")
         path.write_text(

@@ -23,7 +23,7 @@ from an older version is migrated automatically, once, into a gateway named
   update-check.json     cache for the once-daily update check
 ```
 
-Up to six environment variables are set, for one process only:
+Up to seven environment variables are set, for one process only:
 
 | Variable | Purpose |
 |---|---|
@@ -33,6 +33,7 @@ Up to six environment variables are set, for one process only:
 | `ANTHROPIC_DEFAULT_SONNET_MODEL` | optional — gateway model used for Claude Code Sonnet background requests, including auto-mode safety classification |
 | `ANTHROPIC_DEFAULT_OPUS_MODEL` | optional — the same selected gateway model, used when Claude Code falls back to its Opus background route |
 | `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | set to `1` unless the gateway file overrides it; makes `/model` list what the gateway serves |
+| `JACKAL_CLASSIFIER_CHECKED` | jackal's own marker, not read by Claude Code — records that `--setup` asked the auto-mode question, so launch knows not to warn |
 
 They're set immediately before `os.execv`, which **replaces** the jackal
 process rather than spawning a child — so `claude` inherits them directly, and
@@ -97,6 +98,21 @@ same gateway model backs Claude Code's Opus fallback route too.
 Running `--setup`/`--reconfigure` against an existing gateway replaces its
 saved aliases rather than preserving them: skipping the Auto-mode prompt on a
 reconfigure drops a previously-set pair instead of carrying it over.
+
+Gateway files saved before this prompt existed were never asked the question,
+so they pin no aliases and Claude Code asks the gateway for its own canonical
+`claude-sonnet-*`/`claude-opus-*` ids instead. On a gateway that doesn't serve
+those, auto mode fails the safety check and denies the tool call. jackal prints
+a one-line reminder at launch when it finds such a file:
+
+```text
+  ·  no auto-mode model configured — auto mode may be unavailable
+     re-run `jackal --setup` for this gateway to fix
+```
+
+Re-running `--setup` for that gateway clears it. The notice is suppressed when
+output is piped, and never appears for a gateway that was asked — including one
+serving canonical Claude ids natively, or where you deliberately chose `skip`.
 
 Whatever you pick as the launch model is written as `ANTHROPIC_MODEL` and only
 sets what the session launches with. Switch it any time from inside the

@@ -2,6 +2,7 @@
 
 - [Compatibility](#compatibility)
 - [Windows: "python3 is not recognized"](#windows-python3-is-not-recognized)
+- ["claude-opus-5 is temporarily unavailable" in auto mode](#claude-opus-5-is-temporarily-unavailable-in-auto-mode)
 - [Error messages](#error-messages)
 - [Known limits](#known-limits)
 
@@ -34,6 +35,35 @@ existing `python.exe`:
 Copy-Item (Get-Command python).Source (Join-Path (Split-Path (Get-Command python).Source) python3.exe)
 ```
 
+## "claude-opus-5 is temporarily unavailable" in auto mode
+
+Auto mode denies a tool call with a message naming `claude-sonnet-5` or
+`claude-opus-5` — models you never chose, on a gateway that may not serve them
+at all. The session itself works fine; only tool calls needing safety
+classification fail, and read-only operations still succeed.
+
+Claude Code classifies unsafe-looking tool calls through a separate request to
+its *own* Sonnet default, falling back to its Opus default. Those are
+independent of your launch model, so a gateway can run the session happily
+while rejecting both classifier ids. Classification then can't complete, and
+auto mode fails closed — denying the action rather than allowing an
+unclassified one.
+
+Check whether the gateway file pins the aliases:
+
+```console
+$ grep DEFAULT ~/.jackal/<name>.env
+```
+
+No output means the gateway was saved before `--setup` asked the auto-mode
+question. Re-run `jackal --setup` for it and answer the **Auto-mode model**
+prompt with a model the gateway actually serves. jackal also prints a reminder
+at launch when it detects this — see
+[configuration](configuration.md#auto-mode-model).
+
+If the aliases *are* set and auto mode still fails, the gateway is genuinely
+failing to serve the model they name; verify it appears in `/model`.
+
 ## Error messages
 
 | Message | Cause |
@@ -46,6 +76,7 @@ Copy-Item (Get-Command python).Source (Join-Path (Split-Path (Get-Command python
 | `could not list gateway models (...) — nothing saved` | `/v1/models` was missing, unauthorized, unreachable, malformed, incomplete, or too large. Fix the endpoint or token and rerun setup; an existing gateway is unchanged. If the gateway has no catalogue endpoint at all, write `~/.jackal/<name>.env` by hand instead — see [configuration](configuration.md#where-gateways-live) for the format. |
 | `gateway exposes no usable models through /v1/models — nothing saved` | The endpoint returned no model IDs Jackal can safely store. Configure the gateway to expose at least one valid model. |
 | `no auto-mode model configured — auto mode may be unavailable on this gateway` | The gateway lacked a complete canonical Sonnet/Opus pair and classifier selection was skipped. Reconfigure and select a gateway model for auto mode. |
+| `no auto-mode model configured — auto mode may be unavailable` at launch | The gateway file was saved before the auto-mode prompt existed, so it was never asked. Re-run `jackal --setup` for that gateway; see [configuration](configuration.md#auto-mode-model). |
 | `jackal: no gateway named '<name>' — see jackal --list` | `use`, `--gateway`, or `--remove` named a gateway that isn't saved. |
 | `` jackal: multiple gateways saved, no default set — run `jackal use <name>` `` | Bare `jackal` with 2+ saved gateways and no default — run `jackal use <name>` to pick one. |
 

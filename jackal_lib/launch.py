@@ -12,6 +12,10 @@ from .terminal import colors
 from .updates import maybe_check_for_update
 
 CLAUDE_HINT = "install it with: npm i -g @anthropic-ai/claude-code"
+# Not a claude variable — jackal's own marker, written by setup to record that
+# auto mode was considered for this gateway. Named JACKAL_ so it cannot collide
+# with anything claude reads out of the inherited environment.
+CLASSIFIER_CHECKED = "JACKAL_CLASSIFIER_CHECKED"
 
 
 def find_claude():
@@ -73,6 +77,34 @@ def banner(name):
         print(f"\n  jackal · gateway {name} · {gw_host}\n")
 
 
+def warn_if_classifier_unconfigured():
+    """One line when a gateway predates the auto-mode question.
+
+    Such a file pins no classifier aliases, so claude asks the gateway for its
+    own canonical claude-sonnet-/claude-opus- ids. A gateway that does not
+    serve those fails the safety classification and auto mode denies the tool
+    call — with an error naming a model the user never chose and no mention of
+    jackal. Cheap to say so here; diagnosing it from that message is not.
+
+    Deliberately not a fetch: launch stays offline, so this can only report
+    what the file records, never re-check the catalogue.
+    """
+    if not sys.stdout.isatty():
+        return  # same rule as the banner: never corrupt piped output
+    if os.environ.get(CLASSIFIER_CHECKED):
+        return
+    if os.environ.get("ANTHROPIC_DEFAULT_SONNET_MODEL") and os.environ.get(
+        "ANTHROPIC_DEFAULT_OPUS_MODEL"
+    ):
+        return  # hand-written aliases are a deliberate answer to the question
+    c = colors()
+    print(
+        f"  {c['D']}·  no auto-mode model configured — auto mode may be"
+        f" unavailable{c['Z']}\n"
+        f"  {c['D']}   re-run `jackal --setup` for this gateway to fix{c['Z']}\n"
+    )
+
+
 def launch(name, args):
     """Load a gateway's config, show the banner, and hand off to claude."""
     load_config(gateway_path(name))
@@ -84,6 +116,7 @@ def launch(name, args):
     os.environ.setdefault("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "1")
     maybe_check_for_update(version())
     banner(name)
+    warn_if_classifier_unconfigured()
 
     claude = find_claude()
     if not os.access(claude, os.X_OK):
