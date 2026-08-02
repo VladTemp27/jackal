@@ -112,7 +112,10 @@ def _atomic_write(path, body):
     _mkdir_secure(path.parent)
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        os.fchmod(fd, 0o600)
+        # mkstemp already creates the temp file owner-only; os.chmod below
+        # (cross-platform) re-asserts 0600 on the final path after the
+        # atomic replace. os.fchmod is POSIX-only and unavailable on
+        # Windows Python 3.9-3.12, so it must not be called here.
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(body)
         os.replace(tmp, path)

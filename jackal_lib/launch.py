@@ -97,6 +97,9 @@ def _prompt_missing_model(name):
             f'jackal: gateway "{name}" needs a model — run jackal interactively once'
         )
     try:
+        for key in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"):
+            if key not in os.environ:
+                sys.exit(f"jackal: gateway config '{gateway_path(name)}' missing {key}")
         model = select_model(
             os.environ["ANTHROPIC_BASE_URL"],
             os.environ["ANTHROPIC_AUTH_TOKEN"],

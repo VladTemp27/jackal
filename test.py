@@ -774,12 +774,16 @@ class JackalTest(unittest.TestCase):
         url, _ = self.models_server()
         out, code = self.run_pty(inputs=["testgw", url, "tok_abc123", "2"], args=[])
         self.assertEqual(code, 0)
-        self.assertEqual(
-            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-two"
-        )
+        settings = self.gateway_settings("testgw")
+        self.assertEqual(json.loads(settings.read_text())["model"], "gw-two")
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
         self.assertIn("Gateway Two", out)
         self.assertNotIn("tok_abc123", out)
+        if POSIX:
+            # _atomic_write's post-replace os.chmod must still land settings.json
+            # at 0600 now that the redundant, Windows-incompatible os.fchmod
+            # call on the temp fd is gone.
+            self.assertEqual(settings.stat().st_mode & 0o777, 0o600)
 
     def test_launch_forces_gateway_config_and_clears_model_env(self):
         self.seed_named("work", "https://work.test", "tok_w", model="gw-two")
@@ -1219,6 +1223,24 @@ class JackalTest(unittest.TestCase):
             json.loads(self.gateway_settings("work").read_text())["model"],
             "manual-model",
         )
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_unpinned_gateway_missing_transport_key_fails_clearly(self):
+        """A hand-edited/partial gateway missing a required transport key must
+        exit with a clear, path-identifying error — not a raw KeyError
+        traceback from indexing os.environ inside _prompt_missing_model."""
+        gdir = self.home / ".jackal"
+        gdir.mkdir(exist_ok=True)
+        path = gdir / "work.env"
+        path.write_text("ANTHROPIC_BASE_URL=https://work.test\n")  # no auth token
+        path.chmod(0o600)
+        self.set_current("work")
+        out, code = self.run_pty(args=["-p", "hi"])
+        self.assertNotEqual(code, 0)
+        self.assertNotIn("Traceback", out)
+        self.assertNotIn("KeyError", out)
+        self.assertIn(str(path), out)
+        self.assertIn("ANTHROPIC_AUTH_TOKEN", out)
 
     def test_malformed_gateway_settings_are_not_overwritten(self):
         self.seed_named("work", "https://work.test", "tok_w", model=None)

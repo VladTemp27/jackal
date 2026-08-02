@@ -46,6 +46,8 @@ Copy-Item (Get-Command python).Source (Join-Path (Split-Path (Get-Command python
 | `token required — nothing saved` | Empty token at the prompt. Nothing is written; any previous config is left intact. |
 | `jackal: no gateway named '<name>' — see jackal --list` | `use`, `--gateway`, or `--remove` named a gateway that isn't saved. |
 | `` jackal: multiple gateways saved, no default set — run `jackal use <name>` `` | Bare `jackal` with 2+ saved gateways and no default — run `jackal use <name>` to pick one. |
+| `jackal: invalid Claude settings '<path>': <reason>` | The gateway's isolated `settings.json` is not valid JSON or not a JSON object. Back up and remove that file (see below), then run the gateway interactively to select a model again. |
+| `jackal: legacy model '<x>' can't be stored safely` | A pre-migration `ANTHROPIC_MODEL` value in the gateway's `.env` contains characters that can't be safely written to `settings.json`. Run `jackal --gateway <name>` interactively and pick a model from the list instead. |
 
 ## Model and configuration
 
