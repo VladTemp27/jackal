@@ -27,6 +27,10 @@ HERE = Path(__file__).resolve().parent
 JACKAL = HERE / "jackal"
 PROMPT = "›".encode()
 POSIX = os.name != "nt"
+# Mirrors jackal_lib.gateways.BACKUP_SUFFIX. The suite runs jackal as a
+# subprocess rather than importing it, so this is asserted against as a
+# literal rather than shared via import.
+BACKUP_SUFFIX = ".jackal-isolated.bak"
 
 CURRENT_VERSION = json.loads((HERE / "package.json").read_text())["version"]
 _parts = [int(p) for p in CURRENT_VERSION.split(".")]
@@ -1487,21 +1491,69 @@ class JackalTest(unittest.TestCase):
         self.assertEqual(normal.read_bytes(), before)
 
     @unittest.skipUnless(POSIX, "symlink creation needs elevated rights on Windows")
-    def test_existing_real_entry_in_gateway_dir_is_not_replaced(self):
+    def test_isolated_build_gateway_entries_are_migrated_and_linked(self):
+        """A gateway created by the earlier fully-isolated build has its own
+        real .claude.json and plugins/ — exactly the shape that build left
+        behind. Launching must move both aside under the backup suffix and
+        replace them with working links to the normal profile, so the fix
+        reaches gateways that already exist, not just new ones."""
         self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
         gdir = self.home / ".jackal" / "claude" / "work"
         gdir.mkdir(parents=True, exist_ok=True)
-        real_agents = gdir / "agents"
-        real_agents.mkdir()
-        (real_agents / "mine.md").write_text("gateway-local agent\n")
-        normal_agents = self.home / ".claude" / "agents"
-        normal_agents.mkdir(parents=True)
-        (normal_agents / "shared.md").write_text("shared agent\n")
+        (gdir / ".claude.json").write_text('{"mcpServers": {"old": {}}}\n')
+        old_plugins = gdir / "plugins"
+        old_plugins.mkdir()
+        (old_plugins / "old.json").write_text("old plugin\n")
+
+        (self.home / ".claude.json").write_text('{"mcpServers": {"new": {}}}\n')
+        normal_plugins = self.home / ".claude" / "plugins"
+        normal_plugins.mkdir(parents=True)
+        (normal_plugins / "shared.json").write_text("shared plugin\n")
+
         r = self.run_piped("--gateway", "work", "-p", "hi")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertFalse(real_agents.is_symlink())
-        self.assertEqual((real_agents / "mine.md").read_text(), "gateway-local agent\n")
-        self.assertFalse((real_agents / "shared.md").exists())
+
+        claude_json = gdir / ".claude.json"
+        self.assertTrue(claude_json.is_symlink())
+        self.assertEqual(claude_json.read_text(), '{"mcpServers": {"new": {}}}\n')
+        json_backup = gdir / (".claude.json" + BACKUP_SUFFIX)
+        self.assertTrue(json_backup.is_file())
+        self.assertFalse(json_backup.is_symlink())
+        self.assertEqual(json_backup.read_text(), '{"mcpServers": {"old": {}}}\n')
+
+        plugins = gdir / "plugins"
+        self.assertTrue(plugins.is_symlink())
+        self.assertEqual((plugins / "shared.json").read_text(), "shared plugin\n")
+        plugins_backup = gdir / ("plugins" + BACKUP_SUFFIX)
+        self.assertTrue(plugins_backup.is_dir())
+        self.assertFalse(plugins_backup.is_symlink())
+        self.assertEqual((plugins_backup / "old.json").read_text(), "old plugin\n")
+
+        self.assertIn(str(gdir), r.stdout + r.stderr)
+        self.assertIn(BACKUP_SUFFIX, r.stdout + r.stderr)
+
+    @unittest.skipUnless(POSIX, "symlink creation needs elevated rights on Windows")
+    def test_migration_backup_name_taken_leaves_entry_alone(self):
+        """A backup already occupying <entry>.jackal-isolated.bak — an
+        earlier migration, or any other collision — must not be clobbered;
+        the live entry is left exactly as it was instead."""
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
+        gdir = self.home / ".jackal" / "claude" / "work"
+        gdir.mkdir(parents=True, exist_ok=True)
+        real = gdir / "plugins"
+        real.mkdir()
+        (real / "current.json").write_text("current\n")
+        backup = gdir / ("plugins" + BACKUP_SUFFIX)
+        backup.mkdir()
+        (backup / "earlier.json").write_text("earlier backup\n")
+
+        (self.home / ".claude" / "plugins").mkdir(parents=True)
+
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(real.is_symlink())
+        self.assertEqual((real / "current.json").read_text(), "current\n")
+        self.assertEqual((backup / "earlier.json").read_text(), "earlier backup\n")
 
     def test_malformed_normal_settings_exits_and_leaves_gateway_file_unchanged(self):
         self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
