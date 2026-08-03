@@ -142,21 +142,73 @@ translation and carries no traffic.
 - **Not in the request path.** Requests go from `claude` to your gateway
   directly.
 
-## Alternatives
+## Why not just set the environment variables?
 
-| Approach | Scope of the change | Normal `claude` still on your subscription? |
-|---|---|---|
-| `export` in your shell rc | every process in every new shell | no |
-| `env` block in `~/.claude/settings.json` | every `claude` invocation | no |
-| shell alias or function | every shell that sourced it | only if you maintain two names |
-| Claude apps gateway (`/login`) | the signed-in session, until you sign out | no, until you sign back in |
-| `jackal` | one process | yes |
+Two variables point Claude Code at a gateway, so every approach below is a way
+of getting them in front of one process. They differ in how much *else* they
+change, and in where the token ends up sitting.
 
-[Claude apps gateway](https://code.claude.com/docs/en/claude-apps-gateway) is
+| Approach | Scope of the change | Token lives in | Normal `claude` still on your subscription? |
+|---|---|---|---|
+| `export` in your shell rc | every process in every new shell | `~/.zshrc`, mode `0644` | no |
+| `env` block in `~/.claude/settings.json` | every `claude` invocation | `settings.json`, mode `0644` | no |
+| shell alias or function | every shell that sourced it | your rc file | only if you maintain two names |
+| `direnv` / `.envrc` | every process started in that directory | a file inside the repo | only outside that directory |
+| inline `VAR=… claude` | one process | your shell history, or nowhere | yes |
+| Claude apps gateway (`/login`) | the signed-in session, until you sign out | the `claude` credential store | no, until you sign back in |
+| `jackal` | one process | `~/.jackal/<name>.env`, mode `0600` | yes |
+
+**`export` in your shell rc** is the one that surprises people. `ANTHROPIC_BASE_URL`
+and `ANTHROPIC_AUTH_TOKEN` are not Claude Code's variables — they are the
+Anthropic SDK's. Exporting them redirects every SDK client, agent runner, and
+script in that shell to your gateway too, whether or not you meant to include
+them. Undoing it for one command means `unset` in that shell and remembering to
+put it back. And the token is now a plaintext line in a file that is `0644` by
+default and, for most people, tracked in a dotfiles repo.
+
+**The `env` block in `~/.claude/settings.json`** narrows the blast radius to
+`claude` itself, which is better — but it applies to *every* `claude`
+invocation, with no per-run escape hatch, and it's the same file your editor
+integration and any teammate-shared settings live in. `jackal` deliberately
+never writes it, which is exactly what keeps plain `claude` working on your
+subscription while `jackal` runs.
+
+**A shell alias or function** gets you two names, which is the right shape — but
+you have to maintain both, the token still lives in your rc, and it only exists
+in shells that sourced it. Anything invoked non-interactively (a script, a hook,
+another tool spawning `claude`) does not see aliases at all.
+
+**`direnv`** binds the change to a directory rather than to a command, which is
+the wrong axis for this: you want gateway sessions and subscription sessions
+side by side in the *same* project, not in different folders. It also puts a
+live credential in a file inside the repo.
+
+**Inline `ANTHROPIC_BASE_URL=… ANTHROPIC_AUTH_TOKEN=… claude`** is correct, and
+worth saying plainly: it has exactly the process scope `jackal` has, and if you
+run this once a month it is the right answer. `jackal` is that command with the
+parts you'd otherwise retype or paste from a note: the URL and token stored
+once at `0600` under a name, `jackal use work` to switch between several, a
+model picker that asks the gateway what it actually serves, and
+`--gateway <name>` to override for a single run without changing the default.
+The value is credential storage and switching, not the variable-setting.
+
+**[Claude apps gateway](https://code.claude.com/docs/en/claude-apps-gateway)** is
 Anthropic's own gateway, built into the `claude` binary, with IdP sign-in and
-OTLP metrics. It is the right choice for an organization deploying a gateway.
-`jackal` solves a smaller problem: one developer, one endpoint that already
-exists, no change to how `claude` behaves the rest of the time.
+OTLP metrics. It is the right choice for an organization deploying a gateway —
+and it replaces your login rather than sitting beside it. `jackal` solves a
+smaller problem: one developer, one endpoint that already exists, no change to
+how `claude` behaves the rest of the time.
+
+### When you don't need `jackal`
+
+- You only ever use the gateway, never your subscription — put the `env` block
+  in `settings.json` and stop there.
+- One endpoint, used rarely — the inline form is fine.
+- Your gateway speaks OpenAI, not the Anthropic Messages API — you need a
+  translating proxy, and `jackal` is not one. See
+  [What `jackal` does not do](#what-jackal-does-not-do).
+- CI or a container — set the two variables in the job definition. `jackal` is a
+  convenience for humans at a terminal, not a runtime dependency.
 
 ## FAQ
 
