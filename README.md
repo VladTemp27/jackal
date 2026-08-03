@@ -224,6 +224,16 @@ a dependency.
 
 No — see [What `jackal` does not do](#what-jackal-does-not-do).
 
+### The context-used percentage is stuck near 100% — is that jackal?
+
+No. Claude Code computes that percentage itself from the `usage` numbers in
+each `/v1/messages` response; `jackal` has already handed off to `claude`
+before any of those requests happen, so it can't see or fix them. A gateway
+that under- or over-reports `cache_creation_input_tokens` /
+`cache_read_input_tokens` will make the bar wrong from the first message on.
+See [Troubleshooting](https://github.com/VladTemp27/jackal/blob/main/docs/troubleshooting.md#context-percentage-stuck-near-100)
+for the mechanics and how to confirm it's the gateway.
+
 ## Uninstall
 
 ```sh

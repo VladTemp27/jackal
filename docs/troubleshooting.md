@@ -4,6 +4,7 @@
 - [Windows: "python3 is not recognized"](#windows-python3-is-not-recognized)
 - [Error messages](#error-messages)
 - [Model and configuration](#model-and-configuration)
+- [Context percentage stuck near 100%](#context-percentage-stuck-near-100)
 - [Known limits](#known-limits)
 
 ## Compatibility
@@ -106,6 +107,26 @@ interactively to select a model again — `jackal` recreates the directory,
 reseeds `settings.json`, and relinks the rest of your normal profile into it.
 Do not remove `~/.claude` or `~/.claude.json`; those belong to ordinary
 Claude, and `jackal` never writes to them.
+
+## Context percentage stuck near 100%
+
+Claude Code's context bar computes
+`(input_tokens + cache_creation_input_tokens + cache_read_input_tokens) / 200000`
+from the `usage` object in each `/v1/messages` response, and divides by a
+fixed 200k — it never asks the gateway for a window size. `jackal` sets four
+environment variables and then `execv`s into `claude` before any HTTP request
+is made, so it has no way to see or correct those numbers; there is nothing to
+patch here.
+
+If the percentage is wrong from the first message on, the gateway is very
+likely mis-reporting one of those three fields — commonly a proxy that
+translates from a non-Anthropic upstream and drops or estimates the
+cache-write/cache-read token counts along the way. That's a gateway bug, not a
+`jackal` one: report it to whoever operates the gateway. [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI),
+for example, has tracked exactly this class of issue
+([#4475](https://github.com/router-for-me/CLIProxyAPI/issues/4475),
+[#4293](https://github.com/router-for-me/CLIProxyAPI/issues/4293)) on the path
+where it translates a Codex/OpenAI upstream into Anthropic-shaped responses.
 
 ## Known limits
 

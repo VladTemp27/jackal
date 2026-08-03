@@ -810,8 +810,9 @@ class JackalTest(unittest.TestCase):
         settings = self.gateway_settings("testgw")
         self.assertEqual(json.loads(settings.read_text())["model"], "gw-two")
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
-        self.assertIn("Gateway Two", out)
-        self.assertNotIn("tok_abc123", out)
+        self.assertIn("Gateway Two", out, "picker must render display_name")
+        self.assertIn("gw-two", out, "ordinary model IDs must remain visible")
+        self.assertNotIn("tok_abc123", out, "token must never reach the screen")
         if POSIX:
             # _atomic_write's post-replace os.chmod must still land settings.json
             # at 0600 now that the redundant, Windows-incompatible os.fchmod
@@ -837,6 +838,56 @@ class JackalTest(unittest.TestCase):
         self.assertIn("model=[]", r.stdout)
         self.assertIn("persistent=[gw-two]", r.stdout)
         self.assertIn("effective=[gw-two]", r.stdout)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_setup_displays_uncloaked_model_id_but_stores_gateway_id(self):
+        cloaked = "claude-fable-5-dd-los-6.5-tpg"
+        pages = {
+            None: {
+                "data": [{"id": cloaked, "display_name": "GPT 5.6 Sol"}],
+                "has_more": False,
+                "last_id": None,
+            }
+        }
+        url, _ = self.models_server(pages=pages)
+
+        out, _ = self.run_pty(inputs=["testgw", url, "tok_a", "1"], args=[])
+
+        # Isolate setup UI output (before stub launches Claude Code).
+        self.assertIn("CLAUDE args=", out, "stub must run after setup")
+        setup_output = out.split("CLAUDE")[0]
+
+        self.assertEqual(setup_output.count("gpt-5.6-sol"), 2)
+        self.assertNotIn(cloaked, setup_output)
+        # The routing id is stored, and it lives in the gateway's own
+        # settings.json now — never as an ANTHROPIC_MODEL line in the .env.
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"], cloaked
+        )
+        self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_typed_clean_model_id_maps_to_cloaked_routing_id(self):
+        """Typing the displayed clean ID must route via the cloaked ID."""
+        cloaked = "claude-fable-5-dd-los-6.5-tpg"
+        pages = {
+            None: {
+                "data": [{"id": cloaked, "display_name": "GPT 5.6 Sol"}],
+                "has_more": False,
+                "last_id": None,
+            }
+        }
+        url, _ = self.models_server(pages=pages)
+
+        # User types the displayed clean ID instead of the picker number
+        self.run_pty(inputs=["testgw", url, "tok_a", "gpt-5.6-sol"], args=[])
+
+        # The cloaked ID must be stored for routing, not the typed clean ID
+        settings = self.gateway_settings("testgw").read_text()
+        self.assertEqual(json.loads(settings)["model"], cloaked)
+        # Neither saved file may contain the clean ID
+        self.assertNotIn("gpt-5.6-sol", settings)
+        self.assertNotIn("gpt-5.6-sol", self.gateway_body())
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_picker_accepts_raw_model_id(self):
