@@ -5,13 +5,48 @@ is truncated, so an aborted setup leaves working credentials untouched.
 """
 
 import getpass
-import os
 import sys
 from pathlib import Path
 
-from .gateways import JACKAL_DIR, gateway_path, read_current, valid_name, write_current
+from .gateways import (
+    gateway_path,
+    read_current,
+    valid_name,
+    write_current,
+    write_gateway_config,
+    write_gateway_model,
+)
 from .models import _display_model_id, choose_model, fetch_models, usable_model
 from .terminal import colors
+
+
+def select_model(url, token, out, tty_in):
+    c = colors()
+
+    def w(s):
+        out.write(s)
+        out.flush()
+
+    models, err = fetch_models(url, token)
+    if err:
+        w(
+            f"\n  {c['D']}·  no model list from gateway ({err})"
+            f" — enter a model id manually{c['Z']}\n"
+        )
+    elif not models:
+        w(
+            f"\n  {c['D']}·  gateway listed no models"
+            f" — enter a model id manually{c['Z']}\n"
+        )
+    model = choose_model(models, w, tty_in, c)
+    if not model:
+        return None
+    if not usable_model(model):
+        w(
+            f"\n  {c['R']}·{c['Z']}  {c['D']}model id {model!r} can't be stored safely{c['Z']}\n"
+        )
+        return None
+    return model
 
 
 def run_setup(out, tty_in):
@@ -60,40 +95,18 @@ def run_setup(out, tty_in):
     if not token:
         die("token required — nothing saved")
 
-    # Nothing below may die(): the fetch is a convenience, and a gateway
-    # without /v1/models must still end up saved. Reaching here means the URL
-    # and token are going to disk.
-    models, err = fetch_models(url, token)
-    if err:
-        w(
-            f"\n  {c['D']}·  no model list from gateway ({err})"
-            f" — no model pinned{c['Z']}\n"
-        )
-    elif not models:
-        # Reachable: a gateway can answer 200 with an empty data[]. Silence
-        # here would look like the prompt was skipped for no reason.
-        w(f"\n  {c['D']}·  gateway listed no models — no model pinned{c['Z']}\n")
-    model = choose_model(models, w, tty_in, c) if models else None
-    if model and not usable_model(model):
-        w(
-            f"\n  {c['R']}·{c['Z']}  {c['D']}model id {model!r} can't be stored"
-            f" safely — no model pinned{c['Z']}\n"
-        )
-        model = None
+    # Nothing below may die() before the writes: the URL and token are going
+    # to disk once a model is selected.
+    model = select_model(url, token, out, tty_in)
+    if not model:
+        die("model required — nothing saved")
 
     body = f"ANTHROPIC_BASE_URL={url}\nANTHROPIC_AUTH_TOKEN={token}\n"
-    if model:
-        body += f"ANTHROPIC_MODEL={model}\n"
-
-    JACKAL_DIR.mkdir(mode=0o700, exist_ok=True)
-    # O_CREAT with mode 0600 means the file is never briefly world-readable.
-    # chmod afterwards also covers overwriting a pre-existing file.
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    # Explicit utf-8 both here and in load_config: the locale encoding would
-    # raise on a non-ASCII value *after* O_TRUNC has already emptied the file.
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(body)
-    os.chmod(path, 0o600)
+    # Writing settings first ensures a settings failure leaves the existing
+    # credential file untouched. Both destinations are replaced atomically,
+    # so neither can be truncated halfway through a write.
+    write_gateway_model(name, model)
+    write_gateway_config(path, body)
 
     if read_current() is None:
         write_current(name)
@@ -101,7 +114,7 @@ def run_setup(out, tty_in):
     w(
         f'\n\n  {c["G"]}✓{c["Z"]}  saved gateway "{name}"  {c["D"]}(0600, {len(token)} chars){c["Z"]}\n'
     )
-    if model:
-        w(f"  {c['D']}   launch model {_display_model_id(model)}{c['Z']}\n")
+    # No `if model` guard: selection is required now, so it is always set.
+    w(f"  {c['D']}   launch model {_display_model_id(model)}{c['Z']}\n")
     w("\n")
     return name

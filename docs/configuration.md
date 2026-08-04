@@ -11,17 +11,48 @@ How `jackal` stores gateways, picks a launch model, and what it prints.
 ## Where gateways live
 
 Gateways are stored one-per-file under `~/.jackal/<name>.env` at mode `0600`,
-with `~/.jackal/current` naming the default. A pre-existing `~/.jackal.env`
-from an older version is migrated automatically, once, into a gateway named
-`default`.
+with `~/.jackal/current` naming the default. Each gateway also has its own
+Claude configuration directory under `~/.jackal/claude/<name>/`, but only the
+launch model is isolated there. `settings.json` is a real, gateway-owned file
+— rewritten before every launch as the normal profile's
+`~/.claude/settings.json` with `model` set to that gateway's — and every other
+entry is a symbolic link back to `~/.claude` (plus `.claude.json`, linked to
+`~/.claude.json`). Native Claude Code state other than the model — agents,
+skills, plugins, personal MCP servers, hooks, permissions, global
+`CLAUDE.md`, history, login state — is therefore shared live with normal
+`claude` and with every other gateway, not copied or isolated. A pre-existing
+`~/.jackal.env` from an older version is migrated automatically, once, into a
+gateway named `default`.
 
 ```
 ~/.jackal/
-  work.env              ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, optional ANTHROPIC_MODEL
+  work.env
   personal.env
-  current               the default gateway's name
-  update-check.json     cache for the once-daily update check
+  current
+  claude/
+    work/
+      settings.json      # real file, gateway-owned, holds this gateway's model
+      .claude.json      -> ~/.claude.json
+      .credentials.json -> ~/.claude/.credentials.json
+      agents/           -> ~/.claude/agents/
+      plugins/          -> ~/.claude/plugins/
+      ...               -> every other ~/.claude entry
 ```
+
+`work.env` holds `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, and — only on a
+gateway saved before model isolation shipped and not yet launched since — a
+legacy `ANTHROPIC_MODEL` line. `claude/work/settings.json` is seeded by
+`--setup` with the chosen model and rewritten before every later launch; the
+links in `claude/work/` are created by `jackal`, once each, and left alone
+after that. `jackal` only ever reads `~/.claude/settings.json` — it never
+writes, repairs, or deletes anything in the normal profile.
+
+A gateway created by the earlier, fully isolated build has real files where
+links now belong. The first launch after upgrading renames each of those aside
+with a `.jackal-isolated.bak` suffix and links the shared entry in its place,
+printing one line saying so. Nothing is deleted — the gateway's old per-entry
+state stays in the `.bak` files and can be removed by hand once you're happy
+with the shared profile.
 
 Up to four environment variables are set, for one process only:
 
@@ -29,13 +60,18 @@ Up to four environment variables are set, for one process only:
 |---|---|
 | `ANTHROPIC_BASE_URL` | points Claude Code at your gateway |
 | `ANTHROPIC_AUTH_TOKEN` | bearer token sent to it |
-| `ANTHROPIC_MODEL` | optional — the launch default chosen at `--setup`; absent if you skipped the picker |
 | `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | set to `1` unless the gateway file overrides it; makes `/model` list what the gateway serves |
+| `CLAUDE_CONFIG_DIR` | set to the gateway's `claude/<name>/` directory, so Claude Code reads and writes that gateway's own `settings.json`, and the normal profile through the links standing in for everything else |
 
-They're set immediately before `os.execv`, which **replaces** the jackal
-process rather than spawning a child — so `claude` inherits them directly, and
-no wrapper process lingers. They apply to that one process and nothing else: no
-`export` in your shell rc, no leakage into other tools.
+`jackal` also removes any `ANTHROPIC_MODEL` inherited from the parent shell or
+a legacy gateway file, so neither can redirect a launch away from the
+gateway's stored model. They're set immediately before `os.execv`, which
+**replaces** the jackal process rather than spawning a child — so `claude`
+inherits them directly, and no wrapper process lingers. They apply to that one
+process and nothing else: no `export` in your shell rc, no leakage into other
+tools, and your normal `claude` profile under `~/.claude` is never written or
+repaired — only linked into the gateway directory and, for `settings.json`,
+read.
 
 The first gateway you set up automatically becomes the default. Adding more
 with `jackal --setup` never changes an *already-set* default on its own —
@@ -54,37 +90,53 @@ with:
      1  Claude Opus 4.6     claude-opus-4-6
      2  Claude Sonnet 4.6   claude-sonnet-4-6
      3  Claude Haiku 4.5    claude-haiku-4-5
-    number, model id, or blank to skip
+    number or model id (required)
     ›
 ```
 
 Answer with the list number, or type a model id directly — useful for an id the
-gateway didn't list, or a catalogue too long to scroll. Leave it blank to skip:
-nothing is written, and Claude Code's own default stands.
+gateway didn't list, or a catalogue too long to scroll. A model is required:
+nothing is saved — not the URL, not the token — until one is chosen, because
+an unpinned gateway can't launch headlessly (see
+[below](#if-the-gateway-adds-models-later-does-model-show-them)).
 
 A gateway that doesn't serve `/v1/models` — 404, unauthorized, timeout, or
 simply unreachable — is a normal, supported setup, not an error. `--setup`
-prints one warning line, skips the picker, and still saves the URL and token.
-The fetch carries a 5 second timeout, so a wedged gateway can't hang setup.
+prints one warning line, skips the list, and still asks for a model id
+directly. The fetch carries a 5 second timeout, so a wedged gateway can't hang
+setup.
 
-Whatever you pick is written as `ANTHROPIC_MODEL` and only sets what the
-session launches with. Switch it any time from inside the session with
-`/model`, which asks the gateway for its catalogue directly — on every saved
-gateway, including ones created before this feature shipped, since discovery is
-turned on at launch rather than written into each gateway file.
+Whatever you pick seeds `~/.jackal/claude/<name>/settings.json` — the one file
+in the gateway's directory that `jackal` owns — as its launch default, not
+`ANTHROPIC_MODEL`. From inside the session, a native `/model` choice followed
+by Enter persists there too, the same way it would in `~/.claude/settings.json`
+for normal `claude`; pressing `s` after `/model` selects for that session only
+and is not written anywhere. Because the gateway's model is always read from
+`settings.json` before that file is rewritten for the next launch, a choice
+made with Enter survives every later rewrite. A gateway saved before this
+shipped may still carry a legacy `ANTHROPIC_MODEL` line in its `.env` — the
+next launch migrates it into `settings.json` once and removes the line, and a
+later native choice always wins over it. Model discovery for the `/model`
+picker itself is turned on at launch rather than written into each gateway
+file, so it works on every saved gateway, including ones created before this
+feature shipped. None of this touches your normal Claude Code profile: its
+model is neither copied into a gateway's `settings.json` nor repaired from
+one, and every other setting in it — permissions, hooks, plugins, and the
+rest — is read fresh into the gateway file on every launch, never written
+back.
 
 ### If the gateway adds models later, does `/model` show them?
 
 Yes. `jackal` has nothing to serve you a stale list from. The catalogue fetched
 during `--setup` is used once, to draw the picker, and is then discarded — it is
-never written to disk. A gateway file holds a single model **id**, not a list,
-and `jackal` makes no network request at launch at all.
+never written to disk. A gateway's isolated `settings.json` holds a single
+model, not a list, and `jackal` makes no network request at launch at all.
 
-The one thing that does persist is your pinned `ANTHROPIC_MODEL`. A model added
-to the gateway later will appear in `/model` but will not become your launch
+The one thing that does persist is your pinned launch model. A model added to
+the gateway later will appear in `/model` but will not become your launch
 default on its own, and if the gateway ever *removes* the model you pinned,
-launches fail until you change that line. Leave the pin blank at setup if you'd
-rather track whatever the gateway defaults to.
+launches fail until you pick a new one — run `jackal --gateway <name>`
+interactively and choose again from the picker or `/model`.
 
 ## Editing an existing gateway
 

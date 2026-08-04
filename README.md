@@ -51,15 +51,16 @@ models the gateway reports:
      1  Claude Opus 4.6     claude-opus-4-6
      2  Claude Sonnet 4.6   claude-sonnet-4-6
      3  Claude Haiku 4.5    claude-haiku-4-5
-    number, model id, or blank to skip
+    number or model id (required)
     › 1
 
   ✓  saved gateway "work"  (0600, 42 chars)
      launch model claude-opus-4-6
 ```
 
-The model prompt is skippable and appears only if the gateway answers
-`GET /v1/models`.
+A launch model is required — setup lists what the gateway reports at
+`GET /v1/models` if it answers, but falls back to typing an id by hand rather
+than skipping the picker.
 
 ## Usage
 
@@ -108,10 +109,25 @@ another terminal talks to your subscription account, concurrently. Requests made
 under `jackal` are billed to whatever account backs the gateway, not to your
 subscription.
 
-`CLAUDE_CONFIG_DIR` is deliberately **not** set, so `jackal` shares your normal
-`~/.claude` — the same hooks, skills, agents, MCP servers, permissions, and
-`CLAUDE.md`. Isolating it would mean rebuilding all of that behind `--settings`,
-`--agents`, and `--mcp-config` to solve a collision that does not occur.
+Each saved gateway has its own Claude configuration directory under
+`~/.jackal/claude/<gateway>/`, but only the model is isolated there. Its
+`settings.json` is a real, gateway-owned file, rewritten before every launch
+from your normal profile's `~/.claude/settings.json` with `model` set to that
+gateway's. Every other entry — agents, skills, plugins, personal MCP servers,
+hooks, permissions, global `CLAUDE.md`, history, login state, and
+`.claude.json` — is a symbolic link back to the normal profile, so a gateway
+sees the exact same objects `claude` does, shared live with no copying and no
+drift. A non-model setting changed inside a Jackal session does not persist:
+`settings.json` is rebuilt from the normal profile on the next launch, because
+normal Claude owns those settings. Repository-local `.claude`, `.mcp.json`,
+and `CLAUDE.md` files still apply because Jackal launches from the same
+working directory.
+
+Gateway authentication still comes entirely from the gateway's `.env` file —
+`jackal` neither copies nor modifies your ordinary Claude credentials to build
+that directory; it only reads `~/.claude/settings.json` (never writes it) and
+links the rest, then sets `CLAUDE_CONFIG_DIR` so Claude Code reads and writes
+the gateway's directory instead of `~/.claude` directly.
 
 ## What counts as a gateway
 
@@ -135,8 +151,9 @@ translation and carries no traffic.
   endpoint.
 - **No model routing.** `jackal` does not route between providers, fall back,
   or rewrite requests — whatever is at `ANTHROPIC_BASE_URL` still decides. It
-  records a launch default (`ANTHROPIC_MODEL`) and turns on the gateway's own
-  model discovery for `/model`, but neither routes a request anywhere.
+  records a launch default in the gateway's own `settings.json` and turns on
+  the gateway's own model discovery for `/model`, but neither routes a
+  request anywhere.
 - **Not for Bedrock or Vertex.** Those are selected with
   `CLAUDE_CODE_USE_BEDROCK` and `CLAUDE_CODE_USE_VERTEX`, not with a base URL.
 - **Not in the request path.** Requests go from `claude` to your gateway
@@ -221,8 +238,12 @@ process, and your stored login is never read or written.
 ### Does it edit `~/.claude/settings.json` or my shell rc?
 
 No. The only files `jackal` writes are under `~/.jackal/` — one `.env` file per
-saved gateway, a `current` file naming the default, and a small
-`update-check.json` cache.
+saved gateway, a `current` file naming the default, a small
+`update-check.json` cache, and each gateway's directory under
+`~/.jackal/claude/<gateway>/`. `jackal` does read `~/.claude/settings.json`,
+to build each gateway's own copy with its model set, and lists `~/.claude`'s
+other entries to link them into that directory — but it never writes,
+repairs, or deletes anything under `~/.claude` or `~/.claude.json` itself.
 
 ### Does `jackal` ever phone home?
 

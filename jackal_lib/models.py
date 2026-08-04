@@ -158,7 +158,7 @@ def fetch_models(url, token, timeout=MODELS_TIMEOUT):
 
 
 def choose_model(models, w, tty_in, c):
-    """The chosen model id, or None to leave Claude Code's default alone.
+    """The chosen model id, or None if no valid selection was made.
 
     Accepts a list number or a model id typed verbatim. The advertised list
     can be a subset of what a gateway will actually serve — undated aliases
@@ -169,18 +169,22 @@ def choose_model(models, w, tty_in, c):
         f"\n  {c['C']}▸{c['Z']} {c['B']}Launch model{c['Z']}   "
         f"{c['D']}{len(models)} from gateway{c['Z']}\n"
     )
-    # Pad so the ids line up, capped so one verbose display_name can't push
-    # every id off the right edge.
-    pad = min(28, max(len(m["display_name"]) for m in models))
-    for i, m in enumerate(models, 1):
-        w(
-            f"    {c['C']}{i:>2}{c['Z']}  {m['display_name']:<{pad}}"
-            f"   {c['D']}{_display_model_id(m['id'])}{c['Z']}\n"
-        )
-    w(f"    {c['D']}number, model id, or blank to skip{c['Z']}\n")
+    if models:
+        # Pad so the ids line up, capped so one verbose display_name can't
+        # push every id off the right edge.
+        pad = min(28, max(len(m["display_name"]) for m in models))
+        for i, m in enumerate(models, 1):
+            w(
+                f"    {c['C']}{i:>2}{c['Z']}  {m['display_name']:<{pad}}"
+                f"   {c['D']}{_display_model_id(m['id'])}{c['Z']}\n"
+            )
+        w(f"    {c['D']}number or model id (required){c['Z']}\n")
+    else:
+        w(f"    {c['D']}model id (required){c['Z']}\n")
     w(f"    {c['D']}›{c['Z']} ")
     answer = (tty_in.readline() or "").strip()
     if not answer:
+        w(f"    {c['R']}model required{c['Z']}\n")
         return None
     # isdecimal, not isdigit: isdigit accepts characters int() rejects, so '²'
     # — a dedicated key next to 1 on AZERTY — would pass the guard and then
@@ -192,7 +196,7 @@ def choose_model(models, w, tty_in, c):
         # A bare number outside the list is a typo, not a model id. Treating it
         # as one would pin something like "12" and surface the mistake much
         # later as an opaque error from Claude Code.
-        w(f"    {c['D']}no entry {n} — no model pinned{c['Z']}\n")
+        w(f"    {c['D']}no entry {n}{c['Z']}\n")
         return None
     # Check if typed answer matches any displayed (clean) model ID. If so,
     # return the original (cloaked) ID for routing. Unlisted typed IDs pass through.

@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,10 @@ HERE = Path(__file__).resolve().parent
 JACKAL = HERE / "jackal"
 PROMPT = "›".encode()
 POSIX = os.name != "nt"
+# Mirrors jackal_lib.gateways.BACKUP_SUFFIX. The suite runs jackal as a
+# subprocess rather than importing it, so this is asserted against as a
+# literal rather than shared via import.
+BACKUP_SUFFIX = ".jackal-isolated.bak"
 
 CURRENT_VERSION = json.loads((HERE / "package.json").read_text())["version"]
 _parts = [int(p) for p in CURRENT_VERSION.split(".")]
@@ -85,15 +90,45 @@ class JackalTest(unittest.TestCase):
         in Python rather than sh so the same stub works on Windows.
         """
         body = (
-            "import os, sys\n"
-            "print('CLAUDE args=[%s] url=[%s] toklen=[%d] model=[%s] discovery=[%s]'\n"
-            "      % (\n"
-            "    ' '.join(sys.argv[1:]),\n"
-            "    os.environ.get('ANTHROPIC_BASE_URL', ''),\n"
-            "    len(os.environ.get('ANTHROPIC_AUTH_TOKEN', '')),\n"
-            "    os.environ.get('ANTHROPIC_MODEL', ''),\n"
-            "    os.environ.get('CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY', ''),\n"
-            "))\n"
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "args = sys.argv[1:]\n"
+            "config_dir = Path(os.environ.get('CLAUDE_CONFIG_DIR') or (Path.home() / '.claude'))\n"
+            "settings = config_dir / 'settings.json'\n"
+            "data = json.loads(settings.read_text()) if settings.is_file() else {}\n"
+            "persistent = data.get('model', '')\n"
+            "effective = os.environ.get('ANTHROPIC_MODEL') or persistent\n"
+            "if '--fake-barrier' in args:\n"
+            "    i = args.index('--fake-barrier')\n"
+            "    barrier = Path(args[i + 1])\n"
+            "    participant = args[i + 2]\n"
+            "    barrier.mkdir(parents=True, exist_ok=True)\n"
+            "    (barrier / (participant + '.ready')).write_text('ready' + chr(10))\n"
+            "    release = barrier / 'release'\n"
+            "    import time\n"
+            "    deadline = time.monotonic() + 10\n"
+            "    while not release.exists() and time.monotonic() < deadline:\n"
+            "        time.sleep(0.02)\n"
+            "    if not release.exists():\n"
+            "        raise SystemExit('barrier timeout')\n"
+            "if '--fake-persist-model' in args:\n"
+            "    model = args[args.index('--fake-persist-model') + 1]\n"
+            "    data['model'] = model\n"
+            "    settings.parent.mkdir(parents=True, exist_ok=True)\n"
+            "    settings.write_text(json.dumps(data, indent=2) + chr(10))\n"
+            "    persistent = effective = model\n"
+            "if '--fake-session-model' in args:\n"
+            "    effective = args[args.index('--fake-session-model') + 1]\n"
+            "project_settings = Path.cwd() / '.claude' / 'settings.json'\n"
+            "project_mcp = Path.cwd() / '.mcp.json'\n"
+            "project_memory = Path.cwd() / 'CLAUDE.md'\n"
+            "print('CLAUDE args=[%s] url=[%s] toklen=[%d] model=[%s] discovery=[%s] config=[%s] persistent=[%s] effective=[%s] project_settings=[%d] project_mcp=[%d] project_memory=[%d]'\n"
+            "      % (' '.join(args), os.environ.get('ANTHROPIC_BASE_URL', ''),\n"
+            "         len(os.environ.get('ANTHROPIC_AUTH_TOKEN', '')),\n"
+            "         os.environ.get('ANTHROPIC_MODEL', ''),\n"
+            "         os.environ.get('CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY', ''),\n"
+            "         config_dir, persistent, effective,\n"
+            "         project_settings.is_file(), project_mcp.is_file(), project_memory.is_file()))\n"
         )
         if os.name == "nt":
             (bindir / "claude_stub.py").write_text(body)
@@ -121,7 +156,12 @@ class JackalTest(unittest.TestCase):
         return ["/usr/bin", "/bin"]
 
     def env(
-        self, with_claude=True, update_check=False, update_url=None, system_path=None
+        self,
+        with_claude=True,
+        update_check=False,
+        update_url=None,
+        system_path=None,
+        extra_env=None,
     ):
         if system_path is None:
             dirs = self._system_path()
@@ -153,7 +193,29 @@ class JackalTest(unittest.TestCase):
             for k in ("SYSTEMROOT", "PATHEXT", "COMSPEC", "TEMP", "TMP"):
                 if k in os.environ:
                     e[k] = os.environ[k]
+        e.update(extra_env or {})
         return e
+
+    def force_symlink_failure(self):
+        """PYTHONPATH for a subprocess run whose every os.symlink call fails.
+
+        A sitecustomize.py on PYTHONPATH is auto-imported by Python at
+        startup (site processing is on by default, and jackal is launched
+        without -S), so this monkeypatches os.symlink before jackal_lib is
+        even imported — without adding any test-only hook to jackal's own
+        source. The suite runs jackal as a subprocess, so an in-process
+        monkeypatch isn't reachable; this is the equivalent for a subprocess
+        harness.
+        """
+        shim_dir = self.tmp / "symlink_shim"
+        shim_dir.mkdir(exist_ok=True)
+        (shim_dir / "sitecustomize.py").write_text(
+            "import os\n"
+            "def _broken_symlink(*a, **k):\n"
+            "    raise OSError('symlinks disabled for this test')\n"
+            "os.symlink = _broken_symlink\n"
+        )
+        return {"PYTHONPATH": str(shim_dir)}
 
     def models_server(self, status=200, pages=None, expect_auth=None):
         """A localhost /v1/models. Returns (base_url, seen).
@@ -253,16 +315,32 @@ class JackalTest(unittest.TestCase):
         return (self.home / ".jackal" / f"{name}.env").read_text()
 
     def seed(self, url, token):
-        self.cfg.write_text(f"ANTHROPIC_BASE_URL={url}\nANTHROPIC_AUTH_TOKEN={token}\n")
+        self.cfg.write_text(
+            f"ANTHROPIC_BASE_URL={url}\n"
+            f"ANTHROPIC_AUTH_TOKEN={token}\n"
+            "ANTHROPIC_MODEL=gw-one\n"
+        )
         self.cfg.chmod(0o600)
 
-    def seed_named(self, name, url, token):
+    def gateway_settings(self, name):
+        return self.home / ".jackal" / "claude" / name / "settings.json"
+
+    def seed_gateway_model(self, name, model, **extra):
+        path = self.gateway_settings(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({**extra, "model": model}, indent=2) + "\n")
+        path.chmod(0o600)
+        return path
+
+    def seed_named(self, name, url, token, model="gw-one"):
         """Write a new-format gateway file directly, bypassing interactive setup."""
         gdir = self.home / ".jackal"
         gdir.mkdir(exist_ok=True)
         path = gdir / f"{name}.env"
         path.write_text(f"ANTHROPIC_BASE_URL={url}\nANTHROPIC_AUTH_TOKEN={token}\n")
         path.chmod(0o600)
+        if model is not None:
+            self.seed_gateway_model(name, model)
         return path
 
     def set_current(self, name):
@@ -327,6 +405,8 @@ class JackalTest(unittest.TestCase):
         update_check=False,
         update_url=None,
         system_path=None,
+        cwd=None,
+        extra_env=None,
     ):
         """Run with stdout as a pipe — i.e. not a tty."""
         return subprocess.run(
@@ -336,12 +416,30 @@ class JackalTest(unittest.TestCase):
                 update_check=update_check,
                 update_url=update_url,
                 system_path=system_path,
+                extra_env=extra_env,
             ),
             capture_output=True,
             text=True,
             stdin=subprocess.DEVNULL,
             check=False,
             timeout=60,  # a prompt that blocks should fail the suite, not stall CI
+            cwd=cwd,
+        )
+
+    def run_fake_claude(self, *args):
+        """Invoke the stub `claude` directly, with normal (non-gateway) user state."""
+        return subprocess.run(
+            [
+                str(
+                    self.home / "bin" / ("claude.cmd" if os.name == "nt" else "claude")
+                ),
+                *args,
+            ],
+            env=self.env(),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
         )
 
     @staticmethod
@@ -465,7 +563,7 @@ class JackalTest(unittest.TestCase):
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_intake_writes_0600_and_hides_token(self):
         out, _ = self.run_pty(
-            inputs=["testgw", "https://gw.test", "tok_abc123"], args=[]
+            inputs=["testgw", "https://gw.test", "tok_abc123", "gw-manual"], args=[]
         )
         gw = self.home / ".jackal" / "testgw.env"
         self.assertTrue(gw.exists())
@@ -491,7 +589,7 @@ class JackalTest(unittest.TestCase):
         self.seed_named("work", "https://work.test", "tok_w")
         self.set_current("work")
         self.run_pty(
-            inputs=["personal", "https://personal.test", "tok_p"],
+            inputs=["personal", "https://personal.test", "tok_p", "gw-manual"],
             args=["--setup", "--version"],
         )
         self.assertEqual(
@@ -705,13 +803,41 @@ class JackalTest(unittest.TestCase):
     # -- model discovery --------------------------------------------------
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
-    def test_picker_number_writes_that_model(self):
+    def test_picker_number_writes_gateway_settings_model(self):
         url, _ = self.models_server()
-        out, _ = self.run_pty(inputs=["testgw", url, "tok_abc123", "2"], args=[])
-        self.assertIn("ANTHROPIC_MODEL=gw-two\n", self.gateway_body())
+        out, code = self.run_pty(inputs=["testgw", url, "tok_abc123", "2"], args=[])
+        self.assertEqual(code, 0)
+        settings = self.gateway_settings("testgw")
+        self.assertEqual(json.loads(settings.read_text())["model"], "gw-two")
+        self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
         self.assertIn("Gateway Two", out, "picker must render display_name")
         self.assertIn("gw-two", out, "ordinary model IDs must remain visible")
         self.assertNotIn("tok_abc123", out, "token must never reach the screen")
+        if POSIX:
+            # _atomic_write's post-replace os.chmod must still land settings.json
+            # at 0600 now that the redundant, Windows-incompatible os.fchmod
+            # call on the temp fd is gone.
+            self.assertEqual(settings.stat().st_mode & 0o777, 0o600)
+
+    def test_launch_forces_gateway_config_and_clears_model_env(self):
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-two")
+        env = self.env()
+        env["CLAUDE_CONFIG_DIR"] = str(self.home / "wrong-config")
+        env["ANTHROPIC_MODEL"] = "shell-model"
+        r = subprocess.run(
+            [sys.executable, str(JACKAL), "--gateway", "work", "-p", "hi"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+        expected = self.home / ".jackal" / "claude" / "work"
+        self.assertEqual(r.returncode, 0)
+        self.assertIn(f"config=[{expected}]", r.stdout)
+        self.assertIn("model=[]", r.stdout)
+        self.assertIn("persistent=[gw-two]", r.stdout)
+        self.assertIn("effective=[gw-two]", r.stdout)
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_setup_displays_uncloaked_model_id_but_stores_gateway_id(self):
@@ -733,7 +859,12 @@ class JackalTest(unittest.TestCase):
 
         self.assertEqual(setup_output.count("gpt-5.6-sol"), 2)
         self.assertNotIn(cloaked, setup_output)
-        self.assertIn(f"ANTHROPIC_MODEL={cloaked}\n", self.gateway_body())
+        # The routing id is stored, and it lives in the gateway's own
+        # settings.json now — never as an ANTHROPIC_MODEL line in the .env.
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"], cloaked
+        )
+        self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_typed_clean_model_id_maps_to_cloaked_routing_id(self):
@@ -752,8 +883,10 @@ class JackalTest(unittest.TestCase):
         self.run_pty(inputs=["testgw", url, "tok_a", "gpt-5.6-sol"], args=[])
 
         # The cloaked ID must be stored for routing, not the typed clean ID
-        self.assertIn(f"ANTHROPIC_MODEL={cloaked}\n", self.gateway_body())
-        # The saved file must NOT contain the clean ID
+        settings = self.gateway_settings("testgw").read_text()
+        self.assertEqual(json.loads(settings)["model"], cloaked)
+        # Neither saved file may contain the clean ID
+        self.assertNotIn("gpt-5.6-sol", settings)
         self.assertNotIn("gpt-5.6-sol", self.gateway_body())
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
@@ -761,22 +894,26 @@ class JackalTest(unittest.TestCase):
         """An advertised list can be a subset — an unlisted id must still work."""
         url, _ = self.models_server()
         self.run_pty(inputs=["testgw", url, "tok_a", "claude-haiku-4-5"], args=[])
-        self.assertIn("ANTHROPIC_MODEL=claude-haiku-4-5\n", self.gateway_body())
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            "claude-haiku-4-5",
+        )
+        self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
-    def test_blank_writes_no_model_pin(self):
-        """Skipping must leave Claude Code's own default alone."""
+    def test_setup_requires_model(self):
         url, _ = self.models_server()
-        self.run_pty(inputs=["testgw", url, "tok_a", ""], args=[])
-        body = self.gateway_body()
-        self.assertIn("ANTHROPIC_BASE_URL=", body)
-        self.assertNotIn("ANTHROPIC_MODEL", body)
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", ""], args=[])
+        self.assertNotEqual(code, 0)
+        self.assertIn("model required", out)
+        self.assertFalse((self.home / ".jackal" / "testgw.env").exists())
+        self.assertFalse(self.gateway_settings("testgw").exists())
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_fetch_sends_bearer_token(self):
         """Must match the header claude sends, or a passing fetch proves nothing."""
         url, seen = self.models_server(expect_auth="Bearer tok_abc123")
-        self.run_pty(inputs=["testgw", url, "tok_abc123", ""], args=[])
+        self.run_pty(inputs=["testgw", url, "tok_abc123", "gw-one"], args=[])
         self.assertTrue(seen, "gateway was never asked for its models")
         self.assertTrue(seen[0][1], "Authorization was not 'Bearer <token>'")
         self.assertTrue(seen[0][0].startswith("/v1/models"), seen[0][0])
@@ -785,7 +922,10 @@ class JackalTest(unittest.TestCase):
     def test_pagination_reaches_second_page(self):
         url, seen = self.models_server()
         self.run_pty(inputs=["testgw", url, "tok_a", "3"], args=[])
-        self.assertIn("ANTHROPIC_MODEL=gw-three\n", self.gateway_body())
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-three"
+        )
+        self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
         self.assertEqual(len(seen), 2, "should stop after has_more goes false")
         self.assertIn("after_id=gw-two", seen[1][0])
 
@@ -793,7 +933,7 @@ class JackalTest(unittest.TestCase):
     def test_missing_models_endpoint_still_saves(self):
         """A gateway serving only /v1/messages is supported, not an error."""
         url, _ = self.models_server(status=404)
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a"], args=[])
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "gw-manual"], args=[])
         body = self.gateway_body()
         self.assertIn(f"ANTHROPIC_BASE_URL={url}", body)
         self.assertIn("tok_a", body)
@@ -802,14 +942,24 @@ class JackalTest(unittest.TestCase):
         # ephemeral port containing 404 would pass a looser assertion.
         self.assertIn("HTTP 404", out, "the skip should say why")
         self.assertEqual(code, 0, "a missing endpoint must not fail setup")
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            "gw-manual",
+        )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_unreachable_gateway_still_saves(self):
-        out, code = self.run_pty(inputs=["testgw", self.dead_url(), "tok_a"], args=[])
+        out, code = self.run_pty(
+            inputs=["testgw", self.dead_url(), "tok_a", "gw-manual"], args=[]
+        )
         self.assertIn("tok_a", self.gateway_body())
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
-        self.assertIn("no model pinned", out)
+        self.assertIn("enter a model id manually", out)
         self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            "gw-manual",
+        )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_setup_over_existing_gateway_replaces_the_pin(self):
@@ -821,28 +971,36 @@ class JackalTest(unittest.TestCase):
         path = self.seed_named("work", "https://old.test", "tok_old")
         path.write_text(path.read_text() + "ANTHROPIC_MODEL=stale-model\n")
         self.run_pty(
-            inputs=["work", self.dead_url(), "tok_new"], args=["--setup", "--version"]
+            inputs=["work", self.dead_url(), "tok_new", "gw-fresh"],
+            args=["--setup", "--version"],
         )
         body = self.gateway_body("work")
         self.assertIn("tok_new", body)
         self.assertNotIn("stale-model", body)
+        self.assertEqual(
+            json.loads(self.gateway_settings("work").read_text())["model"], "gw-fresh"
+        )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_truncated_response_still_saves(self):
         """IncompleteRead is not an OSError; it must not escape and kill setup."""
         out, code = self.run_pty(
-            inputs=["testgw", self.truncated_server(), "tok_a"], args=[]
+            inputs=["testgw", self.truncated_server(), "tok_a", "gw-manual"], args=[]
         )
         self.assertIn("tok_a", self.gateway_body())
-        self.assertIn("no model pinned", out)
+        self.assertIn("enter a model id manually", out)
         self.assertNotIn("Traceback", out)
         self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            "gw-manual",
+        )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_garbage_status_line_still_saves(self):
         """Pointing jackal at a non-HTTP port must warn, not crash."""
         out, code = self.run_pty(
-            inputs=["testgw", self.garbage_status_server(), "tok_a"],
+            inputs=["testgw", self.garbage_status_server(), "tok_a", "gw-manual"],
             args=[],
         )
         self.assertIn("tok_a", self.gateway_body())
@@ -850,6 +1008,10 @@ class JackalTest(unittest.TestCase):
         self.assertIn("BadStatusLine", out)
         self.assertNotIn("Traceback", out)
         self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            "gw-manual",
+        )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_oversized_response_still_saves(self):
@@ -860,11 +1022,15 @@ class JackalTest(unittest.TestCase):
             "last_id": None,
         }
         url, _ = self.models_server(pages={None: big})
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a"], args=[])
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "gw-manual"], args=[])
         self.assertIn("tok_a", self.gateway_body())
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
         self.assertIn("larger than", out)
         self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            "gw-manual",
+        )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_hostile_model_id_cannot_inject_an_env_line(self):
@@ -875,7 +1041,7 @@ class JackalTest(unittest.TestCase):
         worse experience than not showing it.
         """
         url, _ = self.models_server(pages={None: HOSTILE})
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a"], args=[])
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "gw-safe"], args=[])
         body = self.gateway_body()
         self.assertNotIn("attacker.test", body, "second env line was written")
         self.assertNotIn("ANTHROPIC_MODEL", body)
@@ -885,17 +1051,19 @@ class JackalTest(unittest.TestCase):
         )
         self.assertIn("listed no models", out, "hostile entry should be dropped")
         self.assertEqual(code, 0, "a bad id must not fail setup")
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-safe"
+        )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_typed_model_id_with_equals_is_refused(self):
         """The fetch-time filter can't see a typed id, so the write-time gate stands."""
         url, _ = self.models_server()
         out, code = self.run_pty(inputs=["testgw", url, "tok_a", "bad=id"], args=[])
-        body = self.gateway_body()
-        self.assertNotIn("ANTHROPIC_MODEL", body)
-        self.assertNotIn("bad=id", body)
+        self.assertNotEqual(code, 0)
         self.assertIn("can't be stored safely", out)
-        self.assertEqual(code, 0)
+        self.assertFalse((self.home / ".jackal" / "testgw.env").exists())
+        self.assertFalse(self.gateway_settings("testgw").exists())
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_superscript_digit_does_not_crash_picker(self):
@@ -905,14 +1073,22 @@ class JackalTest(unittest.TestCase):
         self.assertNotIn("Traceback", out)
         self.assertEqual(code, 0)
         self.assertIn("tok_a", self.gateway_body(), "credentials must still be saved")
+        # Not a decimal digit, so it is treated as a literal (unusual but
+        # usable) raw model id rather than a list index — the crash this
+        # guards against would otherwise come from int('²').
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"], "²"
+        )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_out_of_range_number_is_not_treated_as_a_model_id(self):
         """Typing 12 with 3 entries is a typo, not a model called "12"."""
         url, _ = self.models_server()
-        out, _ = self.run_pty(inputs=["testgw", url, "tok_a", "12"], args=[])
-        self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "12"], args=[])
+        self.assertNotEqual(code, 0)
         self.assertIn("no entry 12", out)
+        self.assertFalse((self.home / ".jackal" / "testgw.env").exists())
+        self.assertFalse(self.gateway_settings("testgw").exists())
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_hostile_id_is_dropped_before_it_reaches_the_terminal(self):
@@ -935,13 +1111,14 @@ class JackalTest(unittest.TestCase):
             }
         }
         url, _ = self.models_server(pages=pages)
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "2"], args=[])
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "gw-safe"], args=[])
         self.assertNotIn("\033[1A", out, "escape sequence reached the terminal")
         self.assertNotIn("\033[2K", out)
-        # The hostile row is dropped entirely, so entry 2 no longer exists.
-        self.assertIn("no entry 2", out)
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
         self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-safe"
+        )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_lone_surrogate_in_id_does_not_crash_setup(self):
@@ -961,7 +1138,10 @@ class JackalTest(unittest.TestCase):
         self.assertNotIn("Traceback", out)
         self.assertEqual(code, 0)
         # The surrogate entry is gone, so entry 1 is the healthy one.
-        self.assertIn("ANTHROPIC_MODEL=gw-one\n", self.gateway_body())
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-one"
+        )
+        self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_deeply_nested_json_does_not_crash_setup(self):
@@ -983,28 +1163,51 @@ class JackalTest(unittest.TestCase):
         self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         url = f"http://127.0.0.1:{srv.server_address[1]}"
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a"], args=[])
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "gw-manual"], args=[])
         self.assertNotIn("Traceback", out)
         self.assertIn("tok_a", self.gateway_body())
         self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            "gw-manual",
+        )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_empty_catalogue_says_so(self):
         """200 with an empty data[] must not look like a skipped prompt."""
         pages = {None: {"data": [], "has_more": False, "last_id": None}}
         url, _ = self.models_server(pages=pages)
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a"], args=[])
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "gw-safe"], args=[])
         self.assertIn("listed no models", out)
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
         self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-safe"
+        )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
-    def test_never_touches_claude_config_dir(self):
+    def test_setup_creates_only_gateway_claude_profile(self):
         """jackal's stated promise: it affects jackal alone."""
         url, _ = self.models_server()
         self.run_pty(inputs=["testgw", url, "tok_a", "1"], args=[])
+        self.assertTrue(self.gateway_settings("testgw").exists())
         self.assertFalse((self.home / ".claude").exists())
         self.assertFalse((self.home / ".claude.json").exists())
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_fresh_setup_dirs_are_0700(self):
+        """mkdir(mode=..., parents=True) only chmods the leaf — every
+        ancestor created for a gateway write (~/.jackal, ~/.jackal/claude,
+        the gateway's own profile dir) must still end up owner-only."""
+        self.assertFalse((self.home / ".jackal").exists())
+        url, _ = self.models_server()
+        self.run_pty(inputs=["testgw", url, "tok_a", "1"], args=[])
+        for d in (
+            self.home / ".jackal",
+            self.home / ".jackal" / "claude",
+            self.home / ".jackal" / "claude" / "testgw",
+        ):
+            self.assertEqual(stat.S_IMODE(d.stat().st_mode), 0o700, f"{d} is not 0700")
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_control_characters_stripped_from_display_name(self):
@@ -1018,7 +1221,10 @@ class JackalTest(unittest.TestCase):
         }
         url, _ = self.models_server(pages=pages)
         out, _ = self.run_pty(inputs=["testgw", url, "tok_a", "1"], args=[])
-        self.assertIn("ANTHROPIC_MODEL=gw-one\n", self.gateway_body())
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-one"
+        )
+        self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
         # The ESC byte and the \r are gone, so what is left renders as inert
         # text: the terminal prints "[2K" instead of erasing the line.
         self.assertIn("Safe[2KSpoofed", out)
@@ -1039,11 +1245,103 @@ class JackalTest(unittest.TestCase):
         r = self.run_piped("-p", "hi")
         self.assertIn("discovery=[0]", r.stdout)
 
-    def test_launch_forwards_saved_model(self):
-        path = self.seed_named("work", "https://work.test", "tok_w")
-        path.write_text(path.read_text() + "ANTHROPIC_MODEL=gw-one\n")
+    def test_launch_uses_isolated_saved_model(self):
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
         r = self.run_piped("-p", "hi")
-        self.assertIn("model=[gw-one]", r.stdout)
+        self.assertIn("model=[]", r.stdout)
+        self.assertIn("persistent=[gw-one]", r.stdout)
+        self.assertIn("effective=[gw-one]", r.stdout)
+
+    def test_legacy_model_seeds_settings_and_is_removed_from_env(self):
+        path = self.seed_named("work", "https://work.test", "tok_w", model=None)
+        path.write_text(
+            path.read_text() + "ANTHROPIC_MODEL=legacy-model\nCUSTOM_FLAG=keep-me\n"
+        )
+        path.chmod(0o600)
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("persistent=[legacy-model]", r.stdout)
+        self.assertNotIn("ANTHROPIC_MODEL", path.read_text())
+        self.assertIn("CUSTOM_FLAG=keep-me\n", path.read_text())
+        if POSIX:
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_existing_isolated_model_wins_over_legacy_pin(self):
+        path = self.seed_named(
+            "work", "https://work.test", "tok_w", model="native-choice"
+        )
+        path.write_text(path.read_text() + "ANTHROPIC_MODEL=stale-pin\n")
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("persistent=[native-choice]", r.stdout)
+        self.assertNotIn("ANTHROPIC_MODEL", path.read_text())
+
+    def test_unpinned_gateway_fails_fast_headless(self):
+        self.seed_named("work", "https://work.test", "tok_w", model=None)
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("needs a model", r.stdout + r.stderr)
+        self.assertIn("run jackal interactively", r.stdout + r.stderr)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_unpinned_gateway_prompts_once_and_saves_model(self):
+        url, seen = self.models_server()
+        self.seed_named("work", url, "tok_w", model=None)
+        self.set_current("work")
+        out, code = self.run_pty(inputs=["2"], args=["-p", "hi"])
+        self.assertEqual(code, 0)
+        self.assertTrue(seen)
+        self.assertEqual(
+            json.loads(self.gateway_settings("work").read_text())["model"], "gw-two"
+        )
+        self.assertIn("persistent=[gw-two]", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_unpinned_gateway_accepts_raw_model_when_catalogue_fails(self):
+        self.seed_named("work", self.dead_url(), "tok_w", model=None)
+        self.set_current("work")
+        out, code = self.run_pty(inputs=["manual-model"], args=["-p", "hi"])
+        self.assertEqual(code, 0)
+        self.assertIn("enter a model id manually", out)
+        self.assertEqual(
+            json.loads(self.gateway_settings("work").read_text())["model"],
+            "manual-model",
+        )
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_unpinned_gateway_missing_transport_key_fails_clearly(self):
+        """A hand-edited/partial gateway missing a required transport key must
+        exit with a clear, path-identifying error — not a raw KeyError
+        traceback from indexing os.environ inside _prompt_missing_model."""
+        gdir = self.home / ".jackal"
+        gdir.mkdir(exist_ok=True)
+        path = gdir / "work.env"
+        path.write_text("ANTHROPIC_BASE_URL=https://work.test\n")  # no auth token
+        path.chmod(0o600)
+        self.set_current("work")
+        out, code = self.run_pty(args=["-p", "hi"])
+        self.assertNotEqual(code, 0)
+        self.assertNotIn("Traceback", out)
+        self.assertNotIn("KeyError", out)
+        self.assertIn(str(path), out)
+        self.assertIn("ANTHROPIC_AUTH_TOKEN", out)
+
+    def test_malformed_gateway_settings_are_not_overwritten(self):
+        self.seed_named("work", "https://work.test", "tok_w", model=None)
+        settings = self.gateway_settings("work")
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        original = b'{"model": '
+        settings.write_bytes(original)
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(str(settings), r.stdout + r.stderr)
+        self.assertEqual(settings.read_bytes(), original)
+
+    def test_invalid_isolated_model_requires_selection_not_env_export(self):
+        self.seed_named("work", "https://work.test", "tok_w", model="bad=id")
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("needs a model", r.stdout + r.stderr)
 
     def test_no_fetch_on_launch(self):
         """Setup-time only — launching must add no network round-trip."""
@@ -1060,6 +1358,407 @@ class JackalTest(unittest.TestCase):
         )
         r = self.run_piped("--gateway", "../victim", "-p", "hi")
         self.assertNotEqual(r.returncode, 0)
+
+    def test_persisted_model_is_scoped_per_gateway(self):
+        normal = self.home / ".claude" / "settings.json"
+        normal.parent.mkdir(parents=True)
+        normal.write_text(
+            json.dumps({"model": "normal-sonnet", "theme": "dark"}, indent=2) + "\n"
+        )
+        before = normal.read_bytes()
+        self.seed_named("work", "https://work.test", "tok_w", model="work-old")
+        self.seed_named(
+            "personal", "https://personal.test", "tok_p", model="personal-old"
+        )
+
+        work = self.run_piped("--gateway", "work", "--fake-persist-model", "work-new")
+        personal = self.run_piped(
+            "--gateway", "personal", "--fake-persist-model", "personal-new"
+        )
+        reopen_work = self.run_piped("--gateway", "work", "-p", "hi")
+        reopen_personal = self.run_piped("--gateway", "personal", "-p", "hi")
+        direct = self.run_fake_claude()
+
+        self.assertEqual(work.returncode, 0, work.stdout + work.stderr)
+        self.assertEqual(personal.returncode, 0, personal.stdout + personal.stderr)
+        self.assertIn("effective=[work-new]", reopen_work.stdout)
+        self.assertIn("effective=[personal-new]", reopen_personal.stdout)
+        self.assertIn("effective=[normal-sonnet]", direct.stdout)
+        self.assertEqual(normal.read_bytes(), before)
+
+    def test_session_only_model_does_not_replace_gateway_default(self):
+        self.seed_named("work", "https://work.test", "tok_w", model="work-default")
+        temporary = self.run_piped(
+            "--gateway", "work", "--fake-session-model", "work-temporary"
+        )
+        reopened = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertIn("effective=[work-temporary]", temporary.stdout)
+        self.assertIn("effective=[work-default]", reopened.stdout)
+        self.assertEqual(
+            json.loads(self.gateway_settings("work").read_text())["model"],
+            "work-default",
+        )
+
+    def test_concurrent_gateways_cannot_cross_write_models(self):
+        self.seed_named("work", "https://work.test", "tok_w", model="work-old")
+        self.seed_named(
+            "personal", "https://personal.test", "tok_p", model="personal-old"
+        )
+        barrier = self.tmp / "barrier"
+        commands = [
+            ("work", "work-new"),
+            ("personal", "personal-new"),
+        ]
+        processes = [
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    str(JACKAL),
+                    "--gateway",
+                    gateway,
+                    "--fake-barrier",
+                    str(barrier),
+                    gateway,
+                    "--fake-persist-model",
+                    model,
+                ],
+                env=self.env(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for gateway, model in commands
+        ]
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if all((barrier / f"{gateway}.ready").exists() for gateway, _ in commands):
+                break
+            time.sleep(0.02)
+        else:
+            self.fail("fake Claude processes did not reach the barrier")
+        (barrier / "release").write_text("go\n")
+        for process in processes:
+            stdout, stderr = process.communicate(timeout=10)
+            self.assertEqual(process.returncode, 0, stdout + stderr)
+        self.assertEqual(
+            json.loads(self.gateway_settings("work").read_text())["model"], "work-new"
+        )
+        self.assertEqual(
+            json.loads(self.gateway_settings("personal").read_text())["model"],
+            "personal-new",
+        )
+
+    def test_project_claude_configuration_remains_visible(self):
+        project = self.tmp / "project"
+        (project / ".claude").mkdir(parents=True)
+        (project / ".claude" / "settings.json").write_text('{"permissions": {}}\n')
+        (project / ".mcp.json").write_text("{}\n")
+        (project / "CLAUDE.md").write_text("project instructions\n")
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
+        r = self.run_piped("--gateway", "work", "-p", "hi", cwd=project)
+        self.assertIn("project_settings=[1]", r.stdout)
+        self.assertIn("project_mcp=[1]", r.stdout)
+        self.assertIn("project_memory=[1]", r.stdout)
+
+    # -- profile sharing: link the normal profile into every gateway ------
+
+    @unittest.skipUnless(POSIX, "symlink creation needs elevated rights on Windows")
+    def test_normal_profile_entries_are_linked_into_gateway(self):
+        """An agent, plugin, rule, and CLAUDE.md in the normal profile are
+        reachable from a gateway — a gateway is a different model, not a
+        different Claude."""
+        claude_dir = self.home / ".claude"
+        (claude_dir / "agents").mkdir(parents=True)
+        (claude_dir / "agents" / "reviewer.md").write_text("agent sentinel\n")
+        (claude_dir / "plugins").mkdir()
+        (claude_dir / "plugins" / "marker.json").write_text("{}\n")
+        (claude_dir / "rules").mkdir()
+        (claude_dir / "rules" / "style.md").write_text("rule sentinel\n")
+        (claude_dir / "CLAUDE.md").write_text("global memory sentinel\n")
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        gdir = self.home / ".jackal" / "claude" / "work"
+        self.assertTrue((gdir / "agents").is_symlink())
+        self.assertEqual(
+            (gdir / "agents" / "reviewer.md").read_text(), "agent sentinel\n"
+        )
+        self.assertTrue((gdir / "plugins").is_symlink())
+        self.assertTrue((gdir / "rules").is_symlink())
+        self.assertEqual((gdir / "rules" / "style.md").read_text(), "rule sentinel\n")
+        self.assertTrue((gdir / "CLAUDE.md").is_symlink())
+        self.assertEqual((gdir / "CLAUDE.md").read_text(), "global memory sentinel\n")
+
+    @unittest.skipUnless(POSIX, "symlink creation needs elevated rights on Windows")
+    def test_claude_json_links_to_normal_profile(self):
+        """~/.claude.json lives outside ~/.claude in normal Claude, but Claude
+        expects it inside CLAUDE_CONFIG_DIR — so personal MCP servers and
+        login state need their own explicit link."""
+        (self.home / ".claude.json").write_text('{"mcpServers": {"x": {}}}\n')
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        link = self.home / ".jackal" / "claude" / "work" / ".claude.json"
+        self.assertTrue(link.is_symlink())
+        self.assertEqual(link.read_text(), '{"mcpServers": {"x": {}}}\n')
+
+    @unittest.skipUnless(POSIX, "symlink creation needs elevated rights on Windows")
+    def test_new_normal_profile_entry_linked_on_next_launch(self):
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
+        r1 = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r1.returncode, 0, r1.stdout + r1.stderr)
+        gdir = self.home / ".jackal" / "claude" / "work"
+        self.assertFalse((gdir / "skills").exists())
+        skills = self.home / ".claude" / "skills"
+        skills.mkdir(parents=True)
+        (skills / "new.md").write_text("new skill\n")
+        r2 = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
+        self.assertTrue((gdir / "skills").is_symlink())
+        self.assertEqual((gdir / "skills" / "new.md").read_text(), "new skill\n")
+
+    def test_gateway_settings_is_never_a_symlink(self):
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        settings = self.gateway_settings("work")
+        self.assertTrue(settings.is_file())
+        self.assertFalse(settings.is_symlink())
+
+    def test_normal_permissions_and_hooks_share_while_model_stays_gateways(self):
+        normal = self.home / ".claude" / "settings.json"
+        normal.parent.mkdir(parents=True)
+        normal.write_text(
+            json.dumps(
+                {
+                    "model": "normal-sonnet",
+                    "permissions": {"allow": ["Bash(git *)"]},
+                    "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": []}]},
+                    "enabledPlugins": ["foo"],
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-model")
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        merged = json.loads(self.gateway_settings("work").read_text())
+        self.assertEqual(merged["model"], "gw-model")
+        self.assertEqual(merged["permissions"], {"allow": ["Bash(git *)"]})
+        self.assertEqual(
+            merged["hooks"], {"PreToolUse": [{"matcher": "Bash", "hooks": []}]}
+        )
+        self.assertEqual(merged["enabledPlugins"], ["foo"])
+
+    def test_env_anthropic_model_is_dropped_from_merged_settings(self):
+        """A persistent `env` block in the normal profile pinning
+        ANTHROPIC_MODEL would, if copied verbatim, resurrect the exact
+        variable launch.py deliberately pops — silently defeating the
+        gateway's own pinned model."""
+        normal = self.home / ".claude" / "settings.json"
+        normal.parent.mkdir(parents=True)
+        normal.write_text(
+            json.dumps(
+                {"env": {"ANTHROPIC_MODEL": "normal-pin", "OTHER_VAR": "keep-me"}},
+                indent=2,
+            )
+            + "\n"
+        )
+        before = normal.read_bytes()
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-model")
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        merged = json.loads(self.gateway_settings("work").read_text())
+        self.assertEqual(merged["model"], "gw-model")
+        self.assertNotIn("ANTHROPIC_MODEL", merged.get("env", {}))
+        self.assertEqual(merged["env"]["OTHER_VAR"], "keep-me")
+        self.assertIn("ANTHROPIC_MODEL", r.stdout + r.stderr)
+        self.assertEqual(normal.read_bytes(), before)
+        # And the pin must not actually reach the process either.
+        self.assertIn("model=[]", r.stdout)
+        self.assertIn("effective=[gw-model]", r.stdout)
+
+    def test_env_gateway_transport_keys_and_api_key_helper_are_dropped(self):
+        """ANTHROPIC_BASE_URL in a copied `env` block would send gateway
+        traffic — carrying the gateway's own token — to a different host;
+        apiKeyHelper could override the gateway's credentials, and a personal
+        ANTHROPIC_API_KEY would be handed to whoever runs the gateway. A
+        USE_BEDROCK/USE_VERTEX flag would abandon the gateway altogether.
+        All are jackal's alone to set, never the normal profile's."""
+        normal = self.home / ".claude" / "settings.json"
+        normal.parent.mkdir(parents=True)
+        normal.write_text(
+            json.dumps(
+                {
+                    "env": {
+                        "ANTHROPIC_BASE_URL": "https://attacker.test",
+                        "ANTHROPIC_AUTH_TOKEN": "stolen",
+                        "ANTHROPIC_API_KEY": "sk-ant-personal",
+                        "CLAUDE_CODE_USE_BEDROCK": "1",
+                        "CLAUDE_CODE_USE_VERTEX": "1",
+                    },
+                    "apiKeyHelper": "/bin/echo fake-key",
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-model")
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        merged = json.loads(self.gateway_settings("work").read_text())
+        self.assertNotIn("apiKeyHelper", merged)
+        # Every env key stripped leaves it empty, so the whole block is gone.
+        self.assertNotIn("env", merged)
+        out = r.stdout + r.stderr
+        self.assertIn("apiKeyHelper", out)
+        for key in (
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+            "ANTHROPIC_API_KEY",
+            "CLAUDE_CODE_USE_BEDROCK",
+            "CLAUDE_CODE_USE_VERTEX",
+        ):
+            self.assertIn(key, out)
+        # Names, never values — the warning must not leak a credential.
+        self.assertNotIn("sk-ant-personal", out)
+        self.assertNotIn("stolen", out)
+
+    def test_gateway_settings_non_model_change_does_not_survive_relaunch(self):
+        normal = self.home / ".claude" / "settings.json"
+        normal.parent.mkdir(parents=True)
+        normal.write_text(json.dumps({"permissions": {"allow": []}}, indent=2) + "\n")
+        before = normal.read_bytes()
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-model")
+        # Simulate a non-model preference landing in the gateway's isolated
+        # settings.json, the way a stray write there might.
+        gw_settings = self.gateway_settings("work")
+        data = json.loads(gw_settings.read_text())
+        data["statusLine"] = {"type": "command", "command": "gateway-only"}
+        gw_settings.write_text(json.dumps(data, indent=2) + "\n")
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        merged = json.loads(gw_settings.read_text())
+        self.assertNotIn("statusLine", merged)
+        self.assertEqual(merged["model"], "gw-model")
+        self.assertEqual(normal.read_bytes(), before)
+
+    @unittest.skipUnless(POSIX, "symlink creation needs elevated rights on Windows")
+    def test_isolated_build_gateway_entries_are_migrated_and_linked(self):
+        """A gateway created by the earlier fully-isolated build has its own
+        real .claude.json and plugins/ — exactly the shape that build left
+        behind. Launching must move both aside under the backup suffix and
+        replace them with working links to the normal profile, so the fix
+        reaches gateways that already exist, not just new ones."""
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
+        gdir = self.home / ".jackal" / "claude" / "work"
+        gdir.mkdir(parents=True, exist_ok=True)
+        (gdir / ".claude.json").write_text('{"mcpServers": {"old": {}}}\n')
+        old_plugins = gdir / "plugins"
+        old_plugins.mkdir()
+        (old_plugins / "old.json").write_text("old plugin\n")
+
+        (self.home / ".claude.json").write_text('{"mcpServers": {"new": {}}}\n')
+        normal_plugins = self.home / ".claude" / "plugins"
+        normal_plugins.mkdir(parents=True)
+        (normal_plugins / "shared.json").write_text("shared plugin\n")
+
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+        claude_json = gdir / ".claude.json"
+        self.assertTrue(claude_json.is_symlink())
+        self.assertEqual(claude_json.read_text(), '{"mcpServers": {"new": {}}}\n')
+        json_backup = gdir / (".claude.json" + BACKUP_SUFFIX)
+        self.assertTrue(json_backup.is_file())
+        self.assertFalse(json_backup.is_symlink())
+        self.assertEqual(json_backup.read_text(), '{"mcpServers": {"old": {}}}\n')
+
+        plugins = gdir / "plugins"
+        self.assertTrue(plugins.is_symlink())
+        self.assertEqual((plugins / "shared.json").read_text(), "shared plugin\n")
+        plugins_backup = gdir / ("plugins" + BACKUP_SUFFIX)
+        self.assertTrue(plugins_backup.is_dir())
+        self.assertFalse(plugins_backup.is_symlink())
+        self.assertEqual((plugins_backup / "old.json").read_text(), "old plugin\n")
+
+        self.assertIn(str(gdir), r.stdout + r.stderr)
+        self.assertIn(BACKUP_SUFFIX, r.stdout + r.stderr)
+
+    @unittest.skipUnless(POSIX, "symlink creation needs elevated rights on Windows")
+    def test_migration_backup_name_taken_leaves_entry_alone(self):
+        """A backup already occupying <entry>.jackal-isolated.bak — an
+        earlier migration, or any other collision — must not be clobbered;
+        the live entry is left exactly as it was instead."""
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
+        gdir = self.home / ".jackal" / "claude" / "work"
+        gdir.mkdir(parents=True, exist_ok=True)
+        real = gdir / "plugins"
+        real.mkdir()
+        (real / "current.json").write_text("current\n")
+        backup = gdir / ("plugins" + BACKUP_SUFFIX)
+        backup.mkdir()
+        (backup / "earlier.json").write_text("earlier backup\n")
+
+        (self.home / ".claude" / "plugins").mkdir(parents=True)
+
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(real.is_symlink())
+        self.assertEqual((real / "current.json").read_text(), "current\n")
+        self.assertEqual((backup / "earlier.json").read_text(), "earlier backup\n")
+        self.assertIn("plugins", r.stdout + r.stderr)
+        self.assertIn(BACKUP_SUFFIX, r.stdout + r.stderr)
+
+    @unittest.skipUnless(POSIX, "the fault-injection shim patches os.symlink")
+    def test_symlink_failure_leaves_pre_existing_entry_in_place_not_stranded(self):
+        """The point of the rename-then-symlink rollback: a systemic symlink
+        failure (no Developer Mode on Windows, a filesystem that refuses
+        symlinks) must not rename a pre-existing real entry aside and then
+        fail to replace it — that would strand it at the backup name and
+        leave the gateway worse off than before the upgrade, every launch.
+        The entry must still be exactly where it started."""
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
+        gdir = self.home / ".jackal" / "claude" / "work"
+        gdir.mkdir(parents=True, exist_ok=True)
+        real_plugins = gdir / "plugins"
+        real_plugins.mkdir()
+        (real_plugins / "old.json").write_text("old plugin\n")
+        normal_plugins = self.home / ".claude" / "plugins"
+        normal_plugins.mkdir(parents=True)
+        (normal_plugins / "shared.json").write_text("shared plugin\n")
+
+        r = self.run_piped(
+            "--gateway",
+            "work",
+            "-p",
+            "hi",
+            extra_env=self.force_symlink_failure(),
+        )
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("could not link", r.stdout + r.stderr)
+        self.assertFalse(real_plugins.is_symlink())
+        self.assertEqual((real_plugins / "old.json").read_text(), "old plugin\n")
+        backup = gdir / ("plugins" + BACKUP_SUFFIX)
+        self.assertFalse(backup.exists(), "original was left stranded at .bak")
+        # settings.json must still get rewritten — model isolation does not
+        # depend on links succeeding.
+        self.assertEqual(
+            json.loads(self.gateway_settings("work").read_text())["model"], "gw-one"
+        )
+
+    def test_malformed_normal_settings_exits_and_leaves_gateway_file_unchanged(self):
+        self.seed_named("work", "https://work.test", "tok_w", model="gw-one")
+        normal = self.home / ".claude" / "settings.json"
+        normal.parent.mkdir(parents=True)
+        normal.write_bytes(b'{"permissions": ')
+        gw_settings = self.gateway_settings("work")
+        before = gw_settings.read_bytes()
+        r = self.run_piped("--gateway", "work", "-p", "hi")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(str(normal), r.stdout + r.stderr)
+        self.assertEqual(gw_settings.read_bytes(), before)
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_update_notice_shown_for_newer_cached_version(self):
