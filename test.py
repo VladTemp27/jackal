@@ -962,9 +962,11 @@ class JackalTest(unittest.TestCase):
         self.assertIn("after_id=gw-two", seen[1][0])
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
-    def test_missing_models_endpoint_writes_nothing(self):
+    def test_missing_models_endpoint_still_saves(self):
         url, _ = self.models_server(status=404)
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "gw-manual", ""], args=[])
+        out, code = self.run_pty(
+            inputs=["testgw", url, "tok_a", "gw-manual", ""], args=[]
+        )
         body = self.gateway_body()
         self.assertIn(f"ANTHROPIC_BASE_URL={url}", body)
         self.assertIn("tok_a", body)
@@ -1008,10 +1010,11 @@ class JackalTest(unittest.TestCase):
         )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
-    def test_truncated_response_writes_nothing(self):
+    def test_truncated_response_still_saves(self):
         """IncompleteRead is not an OSError; it must not escape and kill setup."""
         out, code = self.run_pty(
-            inputs=["testgw", self.truncated_server(), "tok_a", "gw-manual", ""], args=[]
+            inputs=["testgw", self.truncated_server(), "tok_a", "gw-manual", ""],
+            args=[],
         )
         self.assertIn("tok_a", self.gateway_body())
         self.assertIn("enter a model id manually", out)
@@ -1040,7 +1043,7 @@ class JackalTest(unittest.TestCase):
         )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
-    def test_oversized_response_writes_nothing(self):
+    def test_oversized_response_still_saves(self):
         """A body too big to hold in memory is refused, not swallowed."""
         big = {
             "data": [{"id": f"m-{i}", "display_name": "x" * 200} for i in range(20000)],
@@ -1048,7 +1051,9 @@ class JackalTest(unittest.TestCase):
             "last_id": None,
         }
         url, _ = self.models_server(pages={None: big})
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "gw-manual", ""], args=[])
+        out, code = self.run_pty(
+            inputs=["testgw", url, "tok_a", "gw-manual", ""], args=[]
+        )
         self.assertIn("tok_a", self.gateway_body())
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
         self.assertIn("larger than", out)
@@ -1067,7 +1072,9 @@ class JackalTest(unittest.TestCase):
         falls back to asking for an id by hand.
         """
         url, _ = self.models_server(pages={None: HOSTILE})
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "gw-safe", ""], args=[])
+        out, code = self.run_pty(
+            inputs=["testgw", url, "tok_a", "gw-safe", ""], args=[]
+        )
         body = self.gateway_body()
         self.assertNotIn("attacker.test", body, "second env line was written")
         self.assertNotIn("ANTHROPIC_MODEL", body)
@@ -1144,7 +1151,9 @@ class JackalTest(unittest.TestCase):
             }
         }
         url, _ = self.models_server(pages=pages)
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "gw-safe", ""], args=[])
+        out, code = self.run_pty(
+            inputs=["testgw", url, "tok_a", "gw-safe", ""], args=[]
+        )
         self.assertNotIn("\033[1A", out, "escape sequence reached the terminal")
         self.assertNotIn("\033[2K", out)
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
@@ -1178,7 +1187,7 @@ class JackalTest(unittest.TestCase):
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
-    def test_deeply_nested_json_writes_nothing(self):
+    def test_deeply_nested_json_still_saves(self):
         """RecursionError is a RuntimeError, so no OSError/ValueError tuple caught it."""
 
         class Handler(BaseHTTPRequestHandler):
@@ -1197,7 +1206,9 @@ class JackalTest(unittest.TestCase):
         self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         url = f"http://127.0.0.1:{srv.server_address[1]}"
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "gw-manual", ""], args=[])
+        out, code = self.run_pty(
+            inputs=["testgw", url, "tok_a", "gw-manual", ""], args=[]
+        )
         self.assertNotIn("Traceback", out)
         self.assertIn("tok_a", self.gateway_body())
         self.assertEqual(code, 0)
@@ -1207,11 +1218,13 @@ class JackalTest(unittest.TestCase):
         )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
-    def test_empty_catalogue_writes_nothing(self):
+    def test_empty_catalogue_still_saves(self):
         """200 with an empty data[] must not look like a skipped prompt."""
         pages = {None: {"data": [], "has_more": False, "last_id": None}}
         url, _ = self.models_server(pages=pages)
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "gw-safe", ""], args=[])
+        out, code = self.run_pty(
+            inputs=["testgw", url, "tok_a", "gw-safe", ""], args=[]
+        )
         self.assertIn("listed no models", out)
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
         self.assertEqual(code, 0)
@@ -1373,7 +1386,9 @@ class JackalTest(unittest.TestCase):
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_hostile_typed_auto_mode_id_is_not_written(self):
         url, _ = self.models_server(pages={None: NON_CLAUDE})
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "1", "bad=id"], args=[])
+        out, code = self.run_pty(
+            inputs=["testgw", url, "tok_a", "1", "bad=id"], args=[]
+        )
         self.assertEqual(code, 0)
         body = self.gateway_body()
         self.assertNotIn("bad=id", body)
