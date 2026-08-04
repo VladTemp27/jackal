@@ -741,7 +741,56 @@ class JackalTest(unittest.TestCase):
         out, _ = self.run_pty(inputs=["testgw", url, "tok_abc123", "2"], args=[])
         self.assertIn("ANTHROPIC_MODEL=gw-two\n", self.gateway_body())
         self.assertIn("Gateway Two", out, "picker must render display_name")
+        self.assertIn("gw-two", out, "ordinary model IDs must remain visible")
         self.assertNotIn("tok_abc123", out, "token must never reach the screen")
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_setup_displays_uncloaked_model_id_but_stores_gateway_id(self):
+        cloaked = "claude-fable-5-dd-los-6.5-tpg"
+        pages = {
+            None: {
+                "data": [{"id": cloaked, "display_name": "GPT 5.6 Sol"}],
+                "has_more": False,
+                "last_id": None,
+            }
+        }
+        url, _ = self.models_server(pages=pages)
+
+        # A lone cloaked id offers no canonical classifier route, so setup asks
+        # for an auto-mode model too; this test is only about the launch pin.
+        out, _ = self.run_pty(inputs=["testgw", url, "tok_a", "1", "skip"], args=[])
+
+        # Isolate setup UI output (before stub launches Claude Code).
+        self.assertIn("CLAUDE args=", out, "stub must run after setup")
+        setup_output = out.split("CLAUDE")[0]
+
+        # Listed and echoed once by the launch picker, then listed and offered
+        # as the blank-line default by the auto-mode picker.
+        self.assertEqual(setup_output.count("gpt-5.6-sol"), 4)
+        self.assertNotIn(cloaked, setup_output)
+        self.assertIn(f"ANTHROPIC_MODEL={cloaked}\n", self.gateway_body())
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_typed_clean_model_id_maps_to_cloaked_routing_id(self):
+        """Typing the displayed clean ID must route via the cloaked ID."""
+        cloaked = "claude-fable-5-dd-los-6.5-tpg"
+        pages = {
+            None: {
+                "data": [{"id": cloaked, "display_name": "GPT 5.6 Sol"}],
+                "has_more": False,
+                "last_id": None,
+            }
+        }
+        url, _ = self.models_server(pages=pages)
+
+        # User types the displayed clean ID instead of the picker number; the
+        # lone cloaked id also triggers the auto-mode prompt, skipped here.
+        self.run_pty(inputs=["testgw", url, "tok_a", "gpt-5.6-sol", "skip"], args=[])
+
+        # The cloaked ID must be stored for routing, not the typed clean ID
+        self.assertIn(f"ANTHROPIC_MODEL={cloaked}\n", self.gateway_body())
+        # The saved file must NOT contain the clean ID
+        self.assertNotIn("gpt-5.6-sol", self.gateway_body())
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_picker_accepts_raw_model_id(self):
