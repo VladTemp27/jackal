@@ -7,15 +7,25 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .gateways import gateway_path, host, load_config
-from .terminal import colors
+from .gateways import (
+    CLASSIFIER_CHECKED,
+    config_value,
+    gateway_claude_dir,
+    gateway_path,
+    host,
+    link_profile,
+    load_config,
+    read_gateway_model,
+    remove_config_key,
+    rewrite_gateway_settings,
+    write_gateway_model,
+)
+from .models import usable_model
+from .setup import select_model
+from .terminal import colors, open_tty
 from .updates import maybe_check_for_update
 
 CLAUDE_HINT = "install it with: npm i -g @anthropic-ai/claude-code"
-# Not a claude variable — jackal's own marker, written by setup to record that
-# auto mode was considered for this gateway. Named JACKAL_ so it cannot collide
-# with anything claude reads out of the inherited environment.
-CLASSIFIER_CHECKED = "JACKAL_CLASSIFIER_CHECKED"
 
 
 def find_claude():
@@ -105,9 +115,81 @@ def warn_if_classifier_unconfigured():
     )
 
 
+def _prompt_missing_model(name):
+    """Interactively pick a launch model for name, or exit trying.
+
+    Headless (no controlling tty) fails fast rather than launching claude
+    unpinned: silently deferring to Claude Code's own default would be a
+    surprise, not a feature.
+    """
+    tty_in, tty_out = open_tty()
+    if tty_in is None:
+        sys.exit(
+            f'jackal: gateway "{name}" needs a model — run jackal interactively once'
+        )
+    try:
+        for key in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"):
+            if key not in os.environ:
+                sys.exit(f"jackal: gateway config '{gateway_path(name)}' missing {key}")
+        # The catalogue is only useful to setup, which asks it a second
+        # question; recovering a missing launch model does not.
+        model, _ = select_model(
+            os.environ["ANTHROPIC_BASE_URL"],
+            os.environ["ANTHROPIC_AUTH_TOKEN"],
+            tty_out,
+            tty_in,
+        )
+    finally:
+        tty_in.close()
+        if tty_out is not tty_in:
+            tty_out.close()
+    if not model:
+        sys.exit(f'jackal: gateway "{name}" needs a model')
+    write_gateway_model(name, model)
+    return model
+
+
+def _ensure_gateway_model(name, path):
+    """The gateway's model, migrating a legacy pin or prompting if unset.
+
+    An isolated settings.json model wins over a legacy ANTHROPIC_MODEL line —
+    set once at --setup time on newer jackal, but still readable on gateways
+    saved before Task 1. Writing the isolated model happens before the legacy
+    line is removed: if cleanup then fails, the .env survives with a
+    redundant line, but the next launch sees the isolated model as
+    authoritative and simply retries cleanup, never resetting the model.
+    """
+    model = read_gateway_model(name)
+    legacy = config_value(path, "ANTHROPIC_MODEL")
+    if model is not None and not usable_model(model):
+        model = None
+    if model is None and legacy:
+        if not usable_model(legacy):
+            sys.exit(f"jackal: legacy model {legacy!r} can't be stored safely")
+        write_gateway_model(name, legacy)
+        model = legacy
+    if legacy and model is not None:
+        remove_config_key(path, "ANTHROPIC_MODEL")
+    if model is None:
+        model = _prompt_missing_model(name)
+    return model
+
+
 def launch(name, args):
     """Load a gateway's config, show the banner, and hand off to claude."""
-    load_config(gateway_path(name))
+    path = gateway_path(name)
+    load_config(path)
+    model = _ensure_gateway_model(name, path)
+    # Link the shared profile and refresh settings.json before handoff, so an
+    # entry added to ~/.claude since the last launch is visible in this one,
+    # and the rewritten file carries this launch's resolved model.
+    link_profile(name)
+    rewrite_gateway_settings(name, model)
+    # Set after load_config so neither a parent shell nor an editable gateway
+    # file can redirect Claude to normal user state: the isolated profile and
+    # a cleared ANTHROPIC_MODEL are enforced last, not merely defaulted.
+    os.environ["CLAUDE_CONFIG_DIR"] = str(gateway_claude_dir(name))
+    os.environ.pop("ANTHROPIC_MODEL", None)
     # Populates the in-session /model picker from the gateway's own
     # /v1/models. Set here rather than written per gateway file so gateways
     # saved before this existed get it too, with no migration. setdefault
