@@ -39,7 +39,8 @@ gateway named `default`.
       ...               -> every other ~/.claude entry
 ```
 
-`work.env` holds `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, and — only on a
+`work.env` holds `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, any auto-mode
+classifier aliases, and — only on a
 gateway saved before model isolation shipped and not yet launched since — a
 legacy `ANTHROPIC_MODEL` line. `claude/work/settings.json` is seeded by
 `--setup` with the chosen model and rewritten before every later launch; the
@@ -54,12 +55,15 @@ printing one line saying so. Nothing is deleted — the gateway's old per-entry
 state stays in the `.bak` files and can be removed by hand once you're happy
 with the shared profile.
 
-Up to four environment variables are set, for one process only:
+Up to seven environment variables are set, for one process only:
 
 | Variable | Purpose |
 |---|---|
 | `ANTHROPIC_BASE_URL` | points Claude Code at your gateway |
 | `ANTHROPIC_AUTH_TOKEN` | bearer token sent to it |
+| `ANTHROPIC_DEFAULT_SONNET_MODEL` | optional — gateway model used for Claude Code Sonnet background requests, including auto-mode safety classification |
+| `ANTHROPIC_DEFAULT_OPUS_MODEL` | optional — the same selected gateway model, used when Claude Code falls back to its Opus background route |
+| `JACKAL_CLASSIFIER_CHECKED` | jackal's own marker, not read by Claude Code — records that `--setup` asked the auto-mode question, so launch knows not to warn |
 | `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | set to `1` unless the gateway file overrides it; makes `/model` list what the gateway serves |
 | `CLAUDE_CONFIG_DIR` | set to the gateway's `claude/<name>/` directory, so Claude Code reads and writes that gateway's own `settings.json`, and the normal profile through the links standing in for everything else |
 
@@ -82,8 +86,9 @@ default, `jackal` refuses to guess and tells you to run `jackal use <name>`.
 ## Choosing a model at setup
 
 Right after the token is validated, `--setup` fetches `GET /v1/models` from the
-gateway and offers a numbered picker for the model Claude Code should launch
-with:
+gateway — authenticated with the same bearer token, and fully paginated to
+walk a catalogue larger than one page — and offers a numbered picker for the
+model Claude Code should launch with:
 
 ```
   ▸ Launch model   3 from gateway
@@ -124,6 +129,48 @@ model is neither copied into a gateway's `settings.json` nor repaired from
 one, and every other setting in it — permissions, hooks, plugins, and the
 rest — is read fresh into the gateway file on every launch, never written
 back.
+
+### Auto-mode model
+
+Claude Code's auto mode routes safety classification through its own
+background Sonnet and Opus requests. If the gateway's catalogue already has
+both a canonical `claude-sonnet-*` and a canonical `claude-opus-*` id, those
+routes work unmodified and `--setup` skips straight past this prompt. If
+either family is missing, `--setup` asks for an Auto-mode model:
+
+```
+  ▸ Auto-mode model   3 from gateway
+     1  GPT 5.6 Sol          gateway-gpt-5.6-sol
+     2  Kimi K2.6            gateway-kimi-k2.6
+     3  GLM 5.1              gateway-glm-5.1
+    number or model id, blank for gateway-gpt-5.6-sol, or skip
+    ›
+```
+
+Enter reuses the launch model you just picked. Typing `skip` leaves both
+aliases unset and warns that auto mode may be unavailable on this gateway.
+Whatever is chosen is written to both
+`ANTHROPIC_DEFAULT_SONNET_MODEL` and `ANTHROPIC_DEFAULT_OPUS_MODEL`, so the
+same gateway model backs Claude Code's Opus fallback route too.
+
+Running `--setup`/`--reconfigure` against an existing gateway replaces its
+saved aliases rather than preserving them: skipping the Auto-mode prompt on a
+reconfigure drops a previously-set pair instead of carrying it over.
+
+Gateway files saved before this prompt existed were never asked the question,
+so they pin no aliases and Claude Code asks the gateway for its own canonical
+`claude-sonnet-*`/`claude-opus-*` ids instead. On a gateway that doesn't serve
+those, auto mode fails the safety check and denies the tool call. jackal prints
+a one-line reminder at launch when it finds such a file:
+
+```text
+  ·  no auto-mode model configured — auto mode may be unavailable
+     re-run `jackal --setup` for this gateway to fix
+```
+
+Re-running `--setup` for that gateway clears it. The notice is suppressed when
+output is piped, and never appears for a gateway that was asked — including one
+serving canonical Claude ids natively, or where you deliberately chose `skip`.
 
 ### If the gateway adds models later, does `/model` show them?
 

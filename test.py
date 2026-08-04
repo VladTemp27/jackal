@@ -48,8 +48,33 @@ PAGE1 = {
     "last_id": "gw-two",
 }
 PAGE2 = {
-    "data": [{"id": "gw-three", "display_name": "Gateway Three"}],
+    "data": [
+        {"id": "gw-three", "display_name": "Gateway Three"},
+        {"id": "claude-sonnet-5", "display_name": "Claude Sonnet 5"},
+        {"id": "claude-opus-5", "display_name": "Claude Opus 5"},
+    ],
     "first_id": "gw-three",
+    "has_more": False,
+    "last_id": None,
+}
+# Focused one-page catalogues for the conditional auto-mode picker: none of
+# these contain both a canonical sonnet and opus route, so has_claude_
+# classifier_models is false and the picker must appear.
+NON_CLAUDE = {
+    "data": [
+        {"id": "gw-one", "display_name": "Gateway One"},
+        {"id": "gw-two", "display_name": "Gateway Two"},
+    ],
+    "has_more": False,
+    "last_id": None,
+}
+SONNET_ONLY = {
+    "data": [{"id": "claude-sonnet-5", "display_name": "Claude Sonnet 5"}],
+    "has_more": False,
+    "last_id": None,
+}
+OPUS_ONLY = {
+    "data": [{"id": "claude-opus-5", "display_name": "Claude Opus 5"}],
     "has_more": False,
     "last_id": None,
 }
@@ -122,10 +147,12 @@ class JackalTest(unittest.TestCase):
             "project_settings = Path.cwd() / '.claude' / 'settings.json'\n"
             "project_mcp = Path.cwd() / '.mcp.json'\n"
             "project_memory = Path.cwd() / 'CLAUDE.md'\n"
-            "print('CLAUDE args=[%s] url=[%s] toklen=[%d] model=[%s] discovery=[%s] config=[%s] persistent=[%s] effective=[%s] project_settings=[%d] project_mcp=[%d] project_memory=[%d]'\n"
+            "print('CLAUDE args=[%s] url=[%s] toklen=[%d] model=[%s] sonnet=[%s] opus=[%s] discovery=[%s] config=[%s] persistent=[%s] effective=[%s] project_settings=[%d] project_mcp=[%d] project_memory=[%d]'\n"
             "      % (' '.join(args), os.environ.get('ANTHROPIC_BASE_URL', ''),\n"
             "         len(os.environ.get('ANTHROPIC_AUTH_TOKEN', '')),\n"
             "         os.environ.get('ANTHROPIC_MODEL', ''),\n"
+            "         os.environ.get('ANTHROPIC_DEFAULT_SONNET_MODEL', ''),\n"
+            "         os.environ.get('ANTHROPIC_DEFAULT_OPUS_MODEL', ''),\n"
             "         os.environ.get('CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY', ''),\n"
             "         config_dir, persistent, effective,\n"
             "         project_settings.is_file(), project_mcp.is_file(), project_memory.is_file()))\n"
@@ -563,7 +590,7 @@ class JackalTest(unittest.TestCase):
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_intake_writes_0600_and_hides_token(self):
         out, _ = self.run_pty(
-            inputs=["testgw", "https://gw.test", "tok_abc123", "gw-manual"], args=[]
+            inputs=["testgw", "https://gw.test", "tok_abc123", "gw-manual", ""], args=[]
         )
         gw = self.home / ".jackal" / "testgw.env"
         self.assertTrue(gw.exists())
@@ -589,7 +616,7 @@ class JackalTest(unittest.TestCase):
         self.seed_named("work", "https://work.test", "tok_w")
         self.set_current("work")
         self.run_pty(
-            inputs=["personal", "https://personal.test", "tok_p", "gw-manual"],
+            inputs=["personal", "https://personal.test", "tok_p", "gw-manual", ""],
             args=["--setup", "--version"],
         )
         self.assertEqual(
@@ -851,13 +878,17 @@ class JackalTest(unittest.TestCase):
         }
         url, _ = self.models_server(pages=pages)
 
-        out, _ = self.run_pty(inputs=["testgw", url, "tok_a", "1"], args=[])
+        # A lone cloaked id offers no canonical classifier route, so setup asks
+        # for an auto-mode model too; this test is only about the launch pin.
+        out, _ = self.run_pty(inputs=["testgw", url, "tok_a", "1", "skip"], args=[])
 
         # Isolate setup UI output (before stub launches Claude Code).
         self.assertIn("CLAUDE args=", out, "stub must run after setup")
         setup_output = out.split("CLAUDE")[0]
 
-        self.assertEqual(setup_output.count("gpt-5.6-sol"), 2)
+        # Listed and echoed once by the launch picker, then listed and offered
+        # as the blank-line default by the auto-mode picker.
+        self.assertEqual(setup_output.count("gpt-5.6-sol"), 4)
         self.assertNotIn(cloaked, setup_output)
         # The routing id is stored, and it lives in the gateway's own
         # settings.json now — never as an ANTHROPIC_MODEL line in the .env.
@@ -879,8 +910,9 @@ class JackalTest(unittest.TestCase):
         }
         url, _ = self.models_server(pages=pages)
 
-        # User types the displayed clean ID instead of the picker number
-        self.run_pty(inputs=["testgw", url, "tok_a", "gpt-5.6-sol"], args=[])
+        # User types the displayed clean ID instead of the picker number; the
+        # lone cloaked id also triggers the auto-mode prompt, skipped here.
+        self.run_pty(inputs=["testgw", url, "tok_a", "gpt-5.6-sol", "skip"], args=[])
 
         # The cloaked ID must be stored for routing, not the typed clean ID
         settings = self.gateway_settings("testgw").read_text()
@@ -931,9 +963,10 @@ class JackalTest(unittest.TestCase):
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_missing_models_endpoint_still_saves(self):
-        """A gateway serving only /v1/messages is supported, not an error."""
         url, _ = self.models_server(status=404)
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "gw-manual"], args=[])
+        out, code = self.run_pty(
+            inputs=["testgw", url, "tok_a", "gw-manual", ""], args=[]
+        )
         body = self.gateway_body()
         self.assertIn(f"ANTHROPIC_BASE_URL={url}", body)
         self.assertIn("tok_a", body)
@@ -950,7 +983,7 @@ class JackalTest(unittest.TestCase):
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_unreachable_gateway_still_saves(self):
         out, code = self.run_pty(
-            inputs=["testgw", self.dead_url(), "tok_a", "gw-manual"], args=[]
+            inputs=["testgw", self.dead_url(), "tok_a", "gw-manual", ""], args=[]
         )
         self.assertIn("tok_a", self.gateway_body())
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
@@ -962,16 +995,11 @@ class JackalTest(unittest.TestCase):
         )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
-    def test_setup_over_existing_gateway_replaces_the_pin(self):
-        """--setup rewrites a gateway wholesale, so a stale pin does not linger.
-
-        Pins the rule deliberately: the file is a plain env file, so anyone who
-        wants to keep an old pin through a failed fetch can edit it back.
-        """
+    def test_failed_reconfigure_preserves_existing_gateway(self):
         path = self.seed_named("work", "https://old.test", "tok_old")
         path.write_text(path.read_text() + "ANTHROPIC_MODEL=stale-model\n")
         self.run_pty(
-            inputs=["work", self.dead_url(), "tok_new", "gw-fresh"],
+            inputs=["work", self.dead_url(), "tok_new", "gw-fresh", ""],
             args=["--setup", "--version"],
         )
         body = self.gateway_body("work")
@@ -985,7 +1013,8 @@ class JackalTest(unittest.TestCase):
     def test_truncated_response_still_saves(self):
         """IncompleteRead is not an OSError; it must not escape and kill setup."""
         out, code = self.run_pty(
-            inputs=["testgw", self.truncated_server(), "tok_a", "gw-manual"], args=[]
+            inputs=["testgw", self.truncated_server(), "tok_a", "gw-manual", ""],
+            args=[],
         )
         self.assertIn("tok_a", self.gateway_body())
         self.assertIn("enter a model id manually", out)
@@ -1000,7 +1029,7 @@ class JackalTest(unittest.TestCase):
     def test_garbage_status_line_still_saves(self):
         """Pointing jackal at a non-HTTP port must warn, not crash."""
         out, code = self.run_pty(
-            inputs=["testgw", self.garbage_status_server(), "tok_a", "gw-manual"],
+            inputs=["testgw", self.garbage_status_server(), "tok_a", "gw-manual", ""],
             args=[],
         )
         self.assertIn("tok_a", self.gateway_body())
@@ -1022,7 +1051,9 @@ class JackalTest(unittest.TestCase):
             "last_id": None,
         }
         url, _ = self.models_server(pages={None: big})
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "gw-manual"], args=[])
+        out, code = self.run_pty(
+            inputs=["testgw", url, "tok_a", "gw-manual", ""], args=[]
+        )
         self.assertIn("tok_a", self.gateway_body())
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
         self.assertIn("larger than", out)
@@ -1033,21 +1064,30 @@ class JackalTest(unittest.TestCase):
         )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
-    def test_hostile_model_id_cannot_inject_an_env_line(self):
+    def test_hostile_catalogue_entry_is_never_written(self):
         """A gateway must not be able to append its own variable to the file.
 
-        Caught at fetch time, so the entry is never offered at all — the
-        picker showing an option that would be refused after picking it is a
-        worse experience than not showing it.
+        Caught at fetch time, so the entry is never offered at all — a fully
+        filtered catalogue is indistinguishable from an empty one, and setup
+        falls back to asking for an id by hand.
         """
         url, _ = self.models_server(pages={None: HOSTILE})
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "gw-safe"], args=[])
+        out, code = self.run_pty(
+            inputs=["testgw", url, "tok_a", "gw-safe", ""], args=[]
+        )
         body = self.gateway_body()
         self.assertNotIn("attacker.test", body, "second env line was written")
         self.assertNotIn("ANTHROPIC_MODEL", body)
+        # The blank answer reuses the hand-typed launch model for auto mode,
+        # so the aliases are the only other lines the file may carry.
         self.assertEqual(
             [ln for ln in body.splitlines() if ln.strip()],
-            [f"ANTHROPIC_BASE_URL={url}", "ANTHROPIC_AUTH_TOKEN=tok_a"],
+            [
+                f"ANTHROPIC_BASE_URL={url}",
+                "ANTHROPIC_AUTH_TOKEN=tok_a",
+                "ANTHROPIC_DEFAULT_SONNET_MODEL=gw-safe",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL=gw-safe",
+            ],
         )
         self.assertIn("listed no models", out, "hostile entry should be dropped")
         self.assertEqual(code, 0, "a bad id must not fail setup")
@@ -1082,7 +1122,7 @@ class JackalTest(unittest.TestCase):
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_out_of_range_number_is_not_treated_as_a_model_id(self):
-        """Typing 12 with 3 entries is a typo, not a model called "12"."""
+        """Typing 12, outside the advertised catalogue, is a typo, not a model called "12"."""
         url, _ = self.models_server()
         out, code = self.run_pty(inputs=["testgw", url, "tok_a", "12"], args=[])
         self.assertNotEqual(code, 0)
@@ -1111,7 +1151,9 @@ class JackalTest(unittest.TestCase):
             }
         }
         url, _ = self.models_server(pages=pages)
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "gw-safe"], args=[])
+        out, code = self.run_pty(
+            inputs=["testgw", url, "tok_a", "gw-safe", ""], args=[]
+        )
         self.assertNotIn("\033[1A", out, "escape sequence reached the terminal")
         self.assertNotIn("\033[2K", out)
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
@@ -1134,7 +1176,8 @@ class JackalTest(unittest.TestCase):
             }
         }
         url, _ = self.models_server(pages=pages)
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "1"], args=[])
+        # Reuse the selected healthy launch model for auto mode.
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "1", ""], args=[])
         self.assertNotIn("Traceback", out)
         self.assertEqual(code, 0)
         # The surrogate entry is gone, so entry 1 is the healthy one.
@@ -1144,7 +1187,7 @@ class JackalTest(unittest.TestCase):
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
-    def test_deeply_nested_json_does_not_crash_setup(self):
+    def test_deeply_nested_json_still_saves(self):
         """RecursionError is a RuntimeError, so no OSError/ValueError tuple caught it."""
 
         class Handler(BaseHTTPRequestHandler):
@@ -1163,7 +1206,9 @@ class JackalTest(unittest.TestCase):
         self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         url = f"http://127.0.0.1:{srv.server_address[1]}"
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "gw-manual"], args=[])
+        out, code = self.run_pty(
+            inputs=["testgw", url, "tok_a", "gw-manual", ""], args=[]
+        )
         self.assertNotIn("Traceback", out)
         self.assertIn("tok_a", self.gateway_body())
         self.assertEqual(code, 0)
@@ -1173,11 +1218,13 @@ class JackalTest(unittest.TestCase):
         )
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
-    def test_empty_catalogue_says_so(self):
+    def test_empty_catalogue_still_saves(self):
         """200 with an empty data[] must not look like a skipped prompt."""
         pages = {None: {"data": [], "has_more": False, "last_id": None}}
         url, _ = self.models_server(pages=pages)
-        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "gw-safe"], args=[])
+        out, code = self.run_pty(
+            inputs=["testgw", url, "tok_a", "gw-safe", ""], args=[]
+        )
         self.assertIn("listed no models", out)
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
         self.assertEqual(code, 0)
@@ -1220,7 +1267,7 @@ class JackalTest(unittest.TestCase):
             }
         }
         url, _ = self.models_server(pages=pages)
-        out, _ = self.run_pty(inputs=["testgw", url, "tok_a", "1"], args=[])
+        out, _ = self.run_pty(inputs=["testgw", url, "tok_a", "1", ""], args=[])
         self.assertEqual(
             json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-one"
         )
@@ -1230,6 +1277,192 @@ class JackalTest(unittest.TestCase):
         self.assertIn("Safe[2KSpoofed", out)
         self.assertNotIn("\033[2K", out, "escape sequence reached the terminal")
         self.assertNotIn("Safe\r", out, "carriage return reached the terminal")
+
+    # -- conditional auto-mode picker --------------------------------------
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_canonical_sonnet_and_opus_need_no_auto_mode_picker(self):
+        url, _ = self.models_server()
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "1"], args=[])
+        self.assertEqual(code, 0)
+        self.assertNotIn("Auto-mode model", out)
+        body = self.gateway_body()
+        self.assertNotIn("ANTHROPIC_DEFAULT_SONNET_MODEL", body)
+        self.assertNotIn("ANTHROPIC_DEFAULT_OPUS_MODEL", body)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_auto_mode_enter_reuses_launch_model(self):
+        url, _ = self.models_server(pages={None: NON_CLAUDE})
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "2", ""], args=[])
+        self.assertEqual(code, 0)
+        body = self.gateway_body()
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-two"
+        )
+        self.assertIn("ANTHROPIC_DEFAULT_SONNET_MODEL=gw-two\n", body)
+        self.assertIn("ANTHROPIC_DEFAULT_OPUS_MODEL=gw-two\n", body)
+        self.assertIn("Auto-mode model", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_auto_mode_model_is_independent_of_the_launch_model(self):
+        """The two selections are separate questions with separate answers."""
+        url, _ = self.models_server(pages={None: NON_CLAUDE})
+        self.run_pty(inputs=["testgw", url, "tok_a", "1", "2"], args=[])
+        body = self.gateway_body()
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-one"
+        )
+        self.assertIn("ANTHROPIC_DEFAULT_SONNET_MODEL=gw-two\n", body)
+        self.assertIn("ANTHROPIC_DEFAULT_OPUS_MODEL=gw-two\n", body)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_sonnet_only_still_prompts_for_auto_mode_model(self):
+        url, _ = self.models_server(pages={None: SONNET_ONLY})
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "1", ""], args=[])
+        self.assertEqual(code, 0)
+        self.assertIn("Auto-mode model", out)
+        body = self.gateway_body()
+        self.assertIn("ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-5\n", body)
+        self.assertIn("ANTHROPIC_DEFAULT_OPUS_MODEL=claude-sonnet-5\n", body)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_opus_only_still_prompts_for_auto_mode_model(self):
+        url, _ = self.models_server(pages={None: OPUS_ONLY})
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "1", ""], args=[])
+        self.assertEqual(code, 0)
+        self.assertIn("Auto-mode model", out)
+        body = self.gateway_body()
+        self.assertIn("ANTHROPIC_DEFAULT_SONNET_MODEL=claude-opus-5\n", body)
+        self.assertIn("ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-5\n", body)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_auto_mode_accepts_raw_model_id(self):
+        """An advertised list can be a subset — an unlisted id must still work."""
+        url, _ = self.models_server(pages={None: NON_CLAUDE})
+        self.run_pty(inputs=["testgw", url, "tok_a", "1", "classifier-route"], args=[])
+        body = self.gateway_body()
+        self.assertIn("ANTHROPIC_DEFAULT_SONNET_MODEL=classifier-route\n", body)
+        self.assertIn("ANTHROPIC_DEFAULT_OPUS_MODEL=classifier-route\n", body)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_auto_mode_skip_writes_no_aliases(self):
+        url, _ = self.models_server(pages={None: NON_CLAUDE})
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "1", "skip"], args=[])
+        self.assertEqual(code, 0)
+        self.assertIn("auto mode may be unavailable", out)
+        body = self.gateway_body()
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-one"
+        )
+        self.assertNotIn("ANTHROPIC_DEFAULT_SONNET_MODEL", body)
+        self.assertNotIn("ANTHROPIC_DEFAULT_OPUS_MODEL", body)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_reconfigure_skip_removes_stale_classifier_aliases(self):
+        """--setup rewrites a gateway wholesale, so stale pins do not linger.
+
+        Seeds a legacy launch pin alongside stale classifier aliases: a
+        successful reconfigure that skips the auto-mode question must drop all
+        three, restoring the wholesale-rewrite coverage the old launch-pin
+        test carried before it was narrowed to the fetch-failure path. The
+        launch model now lives in settings.json, so no ANTHROPIC_MODEL line
+        comes back to replace the legacy one.
+        """
+        url, _ = self.models_server(pages={None: NON_CLAUDE})
+        path = self.seed_named("work", url, "tok_old")
+        path.write_text(
+            path.read_text()
+            + "ANTHROPIC_MODEL=old-route\n"
+            + "ANTHROPIC_DEFAULT_SONNET_MODEL=old-route\n"
+            + "ANTHROPIC_DEFAULT_OPUS_MODEL=old-route\n"
+        )
+        self.run_pty(inputs=["work", url, "tok_new", "1", "skip"], args=["--setup"])
+        body = self.gateway_body("work")
+        self.assertNotIn("old-route", body)
+        self.assertNotIn("ANTHROPIC_MODEL", body)
+        self.assertNotIn("ANTHROPIC_DEFAULT_SONNET_MODEL", body)
+        self.assertNotIn("ANTHROPIC_DEFAULT_OPUS_MODEL", body)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_hostile_typed_auto_mode_id_is_not_written(self):
+        url, _ = self.models_server(pages={None: NON_CLAUDE})
+        out, code = self.run_pty(
+            inputs=["testgw", url, "tok_a", "1", "bad=id"], args=[]
+        )
+        self.assertEqual(code, 0)
+        body = self.gateway_body()
+        self.assertNotIn("bad=id", body)
+        self.assertNotIn("ANTHROPIC_DEFAULT_SONNET_MODEL", body)
+        self.assertNotIn("ANTHROPIC_DEFAULT_OPUS_MODEL", body)
+        self.assertIn("can't be stored safely", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_old_gateway_file_warns_at_launch(self):
+        """The whole point: a file predating auto mode says so, every launch."""
+        self.seed_named("work", "https://work.test", "tok_w")
+        out, _ = self.run_pty(args=["-p", "hi"])
+        self.assertIn("auto mode may be unavailable", out)
+        self.assertIn("jackal --setup", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_native_claude_gateway_does_not_warn(self):
+        """Setup writes no aliases here either — the marker is what separates
+        this from the case above, and a false nag would be forever."""
+        url, _ = self.models_server()
+        self.run_pty(inputs=["testgw", url, "tok_a", "1"], args=[])
+        out, _ = self.run_pty(args=["-p", "hi"])
+        self.assertNotIn("auto mode may be unavailable", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_skipped_auto_mode_does_not_warn_on_later_launches(self):
+        """Skip is an answer, not an omission; nagging would punish choosing it."""
+        url, _ = self.models_server(pages={None: NON_CLAUDE})
+        self.run_pty(inputs=["testgw", url, "tok_a", "1", "skip"], args=[])
+        out, _ = self.run_pty(args=["-p", "hi"])
+        self.assertNotIn("auto mode may be unavailable", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_configured_auto_mode_does_not_warn(self):
+        url, _ = self.models_server(pages={None: NON_CLAUDE})
+        self.run_pty(inputs=["testgw", url, "tok_a", "1", "1"], args=[])
+        out, _ = self.run_pty(args=["-p", "hi"])
+        self.assertNotIn("auto mode may be unavailable", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_hand_written_aliases_suppress_warning(self):
+        """No marker, but both aliases pinned by hand — already an answer."""
+        path = self.seed_named("work", "https://work.test", "tok_w")
+        path.write_text(
+            path.read_text()
+            + "ANTHROPIC_DEFAULT_SONNET_MODEL=gw-a\n"
+            + "ANTHROPIC_DEFAULT_OPUS_MODEL=gw-b\n"
+        )
+        out, _ = self.run_pty(args=["-p", "hi"])
+        self.assertNotIn("auto mode may be unavailable", out)
+
+    def test_classifier_warning_suppressed_when_piped(self):
+        """Same rule as the banner: keeps `jackal -p ... > file` clean."""
+        self.seed_named("work", "https://work.test", "tok_w")
+        r = self.run_piped("-p", "hi")
+        self.assertNotIn("auto mode may be unavailable", r.stdout)
+
+    def test_marker_is_not_forwarded_as_a_model_alias(self):
+        """The marker must not be mistaken for classifier configuration."""
+        path = self.seed_named("work", "https://work.test", "tok_w")
+        path.write_text(path.read_text() + "JACKAL_CLASSIFIER_CHECKED=1\n")
+        r = self.run_piped("-p", "hi")
+        self.assertIn("sonnet=[] opus=[]", r.stdout)
+
+    def test_launch_forwards_saved_classifier_aliases(self):
+        path = self.seed_named("work", "https://work.test", "tok_w")
+        path.write_text(
+            path.read_text()
+            + "ANTHROPIC_DEFAULT_SONNET_MODEL=gw-a\n"
+            + "ANTHROPIC_DEFAULT_OPUS_MODEL=gw-b\n"
+        )
+        r = self.run_piped("-p", "hi")
+        self.assertIn("sonnet=[gw-a]", r.stdout)
+        self.assertIn("opus=[gw-b]", r.stdout)
 
     def test_discovery_flag_reaches_claude(self):
         self.seed_named("work", "https://work.test", "tok_w")

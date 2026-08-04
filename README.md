@@ -28,8 +28,8 @@ npx jackal-cli            # try it, nothing installed permanently
 npm i -g jackal-cli       # install `jackal` on your PATH
 ```
 
-The first run prompts for a gateway name, base URL, and token, then offers the
-models the gateway reports:
+The first run prompts for a gateway name, base URL, and token, then requires
+the models the gateway reports:
 
 ```
   ╭────────────────────────────────────────╮
@@ -61,6 +61,20 @@ models the gateway reports:
 A launch model is required — setup lists what the gateway reports at
 `GET /v1/models` if it answers, but falls back to typing an id by hand rather
 than skipping the picker.
+
+A second Auto-mode model prompt follows only when the catalogue is missing
+either the canonical `claude-sonnet-*` or `claude-opus-*` family — the ids
+Claude Code's auto-mode safety check asks for by name. Blank reuses the launch
+model, `skip` leaves auto mode alone:
+
+```
+  ▸ Auto-mode model   3 from gateway
+     1  GPT 5.6 Sol          gateway-gpt-5.6-sol
+     2  Kimi K2.6            gateway-kimi-k2.6
+     3  GLM 5.1              gateway-glm-5.1
+    number or model id, blank for gateway-gpt-5.6-sol, or skip
+    ›
+```
 
 ## Usage
 

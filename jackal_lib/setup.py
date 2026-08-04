@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from .gateways import (
+    CLASSIFIER_CHECKED,
     gateway_path,
     read_current,
     valid_name,
@@ -16,11 +17,24 @@ from .gateways import (
     write_gateway_config,
     write_gateway_model,
 )
-from .models import _display_model_id, choose_model, fetch_models, usable_model
+from .models import (
+    _display_model_id,
+    choose_model,
+    fetch_models,
+    has_claude_classifier_models,
+    usable_model,
+)
 from .terminal import colors
 
 
 def select_model(url, token, out, tty_in):
+    """The chosen launch model and the catalogue it was chosen from.
+
+    Returns (model, models); model is None when nothing usable was picked.
+    The catalogue comes back with it so a caller can ask further questions of
+    the same fetch — setup needs it to decide whether auto mode has to be
+    configured — without a second round-trip to the gateway.
+    """
     c = colors()
 
     def w(s):
@@ -40,13 +54,13 @@ def select_model(url, token, out, tty_in):
         )
     model = choose_model(models, w, tty_in, c)
     if not model:
-        return None
+        return None, models
     if not usable_model(model):
         w(
             f"\n  {c['R']}·{c['Z']}  {c['D']}model id {model!r} can't be stored safely{c['Z']}\n"
         )
-        return None
-    return model
+        return None, models
+    return model, models
 
 
 def run_setup(out, tty_in):
@@ -97,11 +111,48 @@ def run_setup(out, tty_in):
 
     # Nothing below may die() before the writes: the URL and token are going
     # to disk once a model is selected.
-    model = select_model(url, token, out, tty_in)
+    model, models = select_model(url, token, out, tty_in)
     if not model:
         die("model required — nothing saved")
 
+    # Only asked when claude's own classifier routes are missing: with both
+    # canonical families present, auto mode already works and pinning aliases
+    # would override a working default for no reason.
+    auto_model = None
+    if not has_claude_classifier_models(models):
+        auto_model = choose_model(
+            models,
+            w,
+            tty_in,
+            c,
+            title="Auto-mode model",
+            default=model,
+            allow_skip=True,
+        )
+        if auto_model and not usable_model(auto_model):
+            w(
+                f"\n  {c['R']}·{c['Z']}  {c['D']}model id {auto_model!r}"
+                f" can't be stored safely — auto mode may be unavailable{c['Z']}\n"
+            )
+            auto_model = None
+        if not auto_model:
+            w(
+                f"\n  {c['D']}·  no auto-mode model configured"
+                f" — auto mode may be unavailable on this gateway{c['Z']}\n"
+            )
+
     body = f"ANTHROPIC_BASE_URL={url}\nANTHROPIC_AUTH_TOKEN={token}\n"
+    if auto_model:
+        body += f"ANTHROPIC_DEFAULT_SONNET_MODEL={auto_model}\n"
+        body += f"ANTHROPIC_DEFAULT_OPUS_MODEL={auto_model}\n"
+    else:
+        # Records that auto mode was considered, which absence of the aliases
+        # above cannot: they are equally absent for a gateway serving canonical
+        # claude ids, for a deliberate skip, and for a file saved before any of
+        # this existed. Only the last deserves a warning, so launch needs this
+        # to tell them apart rather than nagging all three.
+        body += f"{CLASSIFIER_CHECKED}=1\n"
+
     # Writing settings first ensures a settings failure leaves the existing
     # credential file untouched. Both destinations are replaced atomically,
     # so neither can be truncated halfway through a write.

@@ -72,9 +72,12 @@ def fetch_models(url, token, timeout=MODELS_TIMEOUT):
     one-line reason otherwise. Both can be set at once: a gateway that serves
     page one and then fails still yields a usable list plus a warning.
 
-    Never raises. A gateway implementing only /v1/messages is a supported
-    setup rather than a failure, so every way this can go wrong has to come
-    back as a value the caller can mention and move past.
+    Never raises: the contract is to return (models, message) rather than
+    leak parser or transport exceptions out of the network boundary. A
+    gateway serving only /v1/messages is a supported setup, so setup prints
+    the message, asks for a model id by hand, and carries on — which only
+    works if IncompleteRead, BadStatusLine, and deeply nested JSON all come
+    back as values rather than tracebacks.
     """
     endpoint = url.rstrip("/") + "/v1/models"
     models, after = [], None
@@ -143,8 +146,8 @@ def fetch_models(url, token, timeout=MODELS_TIMEOUT):
             # returning a silently truncated catalogue.
             return models, f"list truncated at {MODELS_PAGES} pages"
     except urllib.error.HTTPError as e:
-        # The expected case: 404 for a gateway without the endpoint, 401 for a
-        # token the endpoint won't accept. Worth a crisper line than str().
+        # 404 for a gateway without the endpoint, 401 for a rejected token —
+        # neither is fatal, but both are worth a crisper line than str().
         return models, f"HTTP {e.code}"
     except Exception as e:  # noqa: BLE001 — see below; the breadth is the point
         # Deliberately total. The contract above is "never raises", and an
@@ -157,8 +160,36 @@ def fetch_models(url, token, timeout=MODELS_TIMEOUT):
     return models, None
 
 
-def choose_model(models, w, tty_in, c):
-    """The chosen model id, or None if no valid selection was made.
+def has_claude_classifier_models(models):
+    """True when Claude Code's native Sonnet and Opus classifier routes exist.
+
+    Deliberately checks the raw advertised ids, not the uncloaked display
+    ones: claude's classifier side queries ask for the literal canonical id,
+    so only a gateway advertising it under that name can actually serve them.
+    A cloaked id that merely decodes to a claude name is routed as the cloaked
+    id, which is exactly the case that still needs an auto-mode model.
+    """
+    return any(m["id"].startswith("claude-sonnet-") for m in models) and any(
+        m["id"].startswith("claude-opus-") for m in models
+    )
+
+
+def choose_model(
+    models,
+    w,
+    tty_in,
+    c,
+    *,
+    title="Launch model",
+    default=None,
+    allow_skip=False,
+):
+    """The chosen model id, the default on a blank line, or None.
+
+    A selection is required unless the caller offers a way out: `default`
+    makes a blank line reuse an already-chosen id, and `allow_skip` accepts
+    the literal "skip". With neither, a blank line is refused, because the
+    launch model has no fallback worth guessing at.
 
     Accepts a list number or a model id typed verbatim. The advertised list
     can be a subset of what a gateway will actually serve — undated aliases
@@ -166,7 +197,7 @@ def choose_model(models, w, tty_in, c):
     isn't listed has to keep working.
     """
     w(
-        f"\n  {c['C']}▸{c['Z']} {c['B']}Launch model{c['Z']}   "
+        f"\n  {c['C']}▸{c['Z']} {c['B']}{title}{c['Z']}   "
         f"{c['D']}{len(models)} from gateway{c['Z']}\n"
     )
     if models:
@@ -178,14 +209,30 @@ def choose_model(models, w, tty_in, c):
                 f"    {c['C']}{i:>2}{c['Z']}  {m['display_name']:<{pad}}"
                 f"   {c['D']}{_display_model_id(m['id'])}{c['Z']}\n"
             )
-        w(f"    {c['D']}number or model id (required){c['Z']}\n")
+        choices = "number or model id"
     else:
-        w(f"    {c['D']}model id (required){c['Z']}\n")
+        # A fetch that failed or came back empty still has to let the user
+        # name a model, so there is a prompt but nothing to number.
+        choices = "model id"
+    if default:
+        hint = f"{choices}, blank for {_display_model_id(default)}"
+    else:
+        hint = f"{choices} (required)"
+    if allow_skip:
+        hint += ", or skip"
+    w(f"    {c['D']}{hint}{c['Z']}\n")
     w(f"    {c['D']}›{c['Z']} ")
     answer = (tty_in.readline() or "").strip()
-    if not answer:
-        w(f"    {c['R']}model required{c['Z']}\n")
+    if allow_skip and answer == "skip":
         return None
+    if not answer:
+        if default:
+            return default
+        if not allow_skip:
+            w(f"    {c['R']}model required{c['Z']}\n")
+        return None
+    if not answer:
+        return default
     # isdecimal, not isdigit: isdigit accepts characters int() rejects, so '²'
     # — a dedicated key next to 1 on AZERTY — would pass the guard and then
     # raise ValueError out of int().

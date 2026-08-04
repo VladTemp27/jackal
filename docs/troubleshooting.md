@@ -2,6 +2,7 @@
 
 - [Compatibility](#compatibility)
 - [Windows: "python3 is not recognized"](#windows-python3-is-not-recognized)
+- ["claude-opus-5 is temporarily unavailable" in auto mode](#claude-opus-5-is-temporarily-unavailable-in-auto-mode)
 - [Error messages](#error-messages)
 - [Model and configuration](#model-and-configuration)
 - [Context percentage stuck near 100%](#context-percentage-stuck-near-100)
@@ -36,6 +37,35 @@ existing `python.exe`:
 Copy-Item (Get-Command python).Source (Join-Path (Split-Path (Get-Command python).Source) python3.exe)
 ```
 
+## "claude-opus-5 is temporarily unavailable" in auto mode
+
+Auto mode denies a tool call with a message naming `claude-sonnet-5` or
+`claude-opus-5` — models you never chose, on a gateway that may not serve them
+at all. The session itself works fine; only tool calls needing safety
+classification fail, and read-only operations still succeed.
+
+Claude Code classifies unsafe-looking tool calls through a separate request to
+its *own* Sonnet default, falling back to its Opus default. Those are
+independent of your launch model, so a gateway can run the session happily
+while rejecting both classifier ids. Classification then can't complete, and
+auto mode fails closed — denying the action rather than allowing an
+unclassified one.
+
+Check whether the gateway file pins the aliases:
+
+```console
+$ grep DEFAULT ~/.jackal/<name>.env
+```
+
+No output means the gateway was saved before `--setup` asked the auto-mode
+question. Re-run `jackal --setup` for it and answer the **Auto-mode model**
+prompt with a model the gateway actually serves. jackal also prints a reminder
+at launch when it detects this — see
+[configuration](configuration.md#auto-mode-model).
+
+If the aliases *are* set and auto mode still fails, the gateway is genuinely
+failing to serve the model they name; verify it appears in `/model`.
+
 ## Error messages
 
 | Message | Cause |
@@ -45,6 +75,9 @@ Copy-Item (Get-Command python).Source (Join-Path (Split-Path (Get-Command python
 | `gateway name must be non-empty and only letters, digits, - or _ — nothing saved` | Invalid gateway name at the `--setup` prompt. |
 | `URL must start with http:// or https:// — nothing saved` | Base URL entered without a scheme. `gw.example.com` is rejected; `https://gw.example.com` is accepted. |
 | `token required — nothing saved` | Empty token at the prompt. Nothing is written; any previous config is left intact. |
+| `model required — nothing saved` | No usable model came out of the picker — a blank line, an out-of-range number, or an id that can't be stored safely. A gateway that can't list `/v1/models` still lets you type an id by hand; nothing is written until one is chosen, and any previous config is left intact. |
+| `no auto-mode model configured — auto mode may be unavailable on this gateway` | The gateway lacked a complete canonical Sonnet/Opus pair and classifier selection was skipped. Reconfigure and select a gateway model for auto mode. |
+| `no auto-mode model configured — auto mode may be unavailable` at launch | The gateway file was saved before the auto-mode prompt existed, so it was never asked. Re-run `jackal --setup` for that gateway; see [configuration](configuration.md#auto-mode-model). |
 | `jackal: no gateway named '<name>' — see jackal --list` | `use`, `--gateway`, or `--remove` named a gateway that isn't saved. |
 | `` jackal: multiple gateways saved, no default set — run `jackal use <name>` `` | Bare `jackal` with 2+ saved gateways and no default — run `jackal use <name>` to pick one. |
 | `jackal: invalid Claude settings '<path>': <reason>` | The gateway's own `settings.json` is not valid JSON or not a JSON object. Back up and remove that file (see below), then run the gateway interactively to select a model again. |

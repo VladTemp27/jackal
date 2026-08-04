@@ -32,6 +32,13 @@ NORMAL_CLAUDE_JSON_PATH = Path.home() / ".claude.json"
 # by a link. Rename, never delete: the old state stays recoverable.
 BACKUP_SUFFIX = ".jackal-isolated.bak"
 
+# Not a claude variable — jackal's own marker, written by setup to record that
+# auto mode was considered for this gateway. Named JACKAL_ so it cannot collide
+# with anything claude reads out of the inherited environment. It lives here
+# rather than beside its writer in setup.py because launch.py both reads it
+# and already imports setup.py: defining it there would close an import cycle.
+CLASSIFIER_CHECKED = "JACKAL_CLASSIFIER_CHECKED"
+
 
 def valid_name(name):
     """True if name is safe to use as a filename component."""
@@ -352,11 +359,17 @@ def link_profile(name):
 # other direction: a personal key pinned for normal claude would be sent to
 # whoever runs the gateway. The USE_* flags would switch the session to a
 # different backend entirely, ignoring the gateway this launch exists to reach.
+# The two classifier aliases are the same story as ANTHROPIC_MODEL: they route
+# auto mode's safety side queries, and a value copied from the normal profile
+# would point them at ids this gateway may not serve — the exact failure the
+# auto-mode prompt exists to prevent.
 _JACKAL_OWNED_ENV_KEYS = (
     "ANTHROPIC_MODEL",
     "ANTHROPIC_BASE_URL",
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_API_KEY",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_VERTEX",
 )

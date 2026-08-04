@@ -112,13 +112,12 @@ launches anyway; model isolation does not depend on links.
 
 ## Talking to the gateway
 
-**The model fetch catches `Exception`, deliberately.** Its contract is that it
-never raises, because a gateway serving only `/v1/messages` has to remain a
-supported setup. An enumerated tuple of exception types kept missing cases that
-each crashed `--setup` with a traceback: `IncompleteRead` and `BadStatusLine`
-are `HTTPException`, not `OSError`, and `RecursionError` from deeply nested JSON
-is a `RuntimeError`. Every branch returns the same `(models, message)` either
-way, so narrowing bought nothing and cost live failure modes.
+**The model fetch catches `Exception`, deliberately.** Its contract is to return
+`(models, message)` rather than leak parser or transport exceptions out of the
+network boundary. A gateway serving only `/v1/messages` has to remain a
+supported setup, so every way the fetch can fail comes back as a value setup
+can mention and move past — asking for a model id by hand instead of dying with
+a traceback on `IncompleteRead`, `BadStatusLine`, or deeply nested JSON.
 
 **The bearer token is set with `add_unredirected_header`.** `urllib`'s redirect
 handler copies ordinary headers onto the redirected request, so a gateway

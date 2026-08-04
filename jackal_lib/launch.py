@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .gateways import (
+    CLASSIFIER_CHECKED,
     config_value,
     gateway_claude_dir,
     gateway_path,
@@ -86,6 +87,34 @@ def banner(name):
         print(f"\n  jackal · gateway {name} · {gw_host}\n")
 
 
+def warn_if_classifier_unconfigured():
+    """One line when a gateway predates the auto-mode question.
+
+    Such a file pins no classifier aliases, so claude asks the gateway for its
+    own canonical claude-sonnet-/claude-opus- ids. A gateway that does not
+    serve those fails the safety classification and auto mode denies the tool
+    call — with an error naming a model the user never chose and no mention of
+    jackal. Cheap to say so here; diagnosing it from that message is not.
+
+    Deliberately not a fetch: launch stays offline, so this can only report
+    what the file records, never re-check the catalogue.
+    """
+    if not sys.stdout.isatty():
+        return  # same rule as the banner: never corrupt piped output
+    if os.environ.get(CLASSIFIER_CHECKED):
+        return
+    if os.environ.get("ANTHROPIC_DEFAULT_SONNET_MODEL") and os.environ.get(
+        "ANTHROPIC_DEFAULT_OPUS_MODEL"
+    ):
+        return  # hand-written aliases are a deliberate answer to the question
+    c = colors()
+    print(
+        f"  {c['D']}·  no auto-mode model configured — auto mode may be"
+        f" unavailable{c['Z']}\n"
+        f"  {c['D']}   re-run `jackal --setup` for this gateway to fix{c['Z']}\n"
+    )
+
+
 def _prompt_missing_model(name):
     """Interactively pick a launch model for name, or exit trying.
 
@@ -102,7 +131,9 @@ def _prompt_missing_model(name):
         for key in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"):
             if key not in os.environ:
                 sys.exit(f"jackal: gateway config '{gateway_path(name)}' missing {key}")
-        model = select_model(
+        # The catalogue is only useful to setup, which asks it a second
+        # question; recovering a missing launch model does not.
+        model, _ = select_model(
             os.environ["ANTHROPIC_BASE_URL"],
             os.environ["ANTHROPIC_AUTH_TOKEN"],
             tty_out,
@@ -167,6 +198,7 @@ def launch(name, args):
     os.environ.setdefault("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "1")
     maybe_check_for_update(version())
     banner(name)
+    warn_if_classifier_unconfigured()
 
     claude = find_claude()
     if not os.access(claude, os.X_OK):
