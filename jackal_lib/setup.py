@@ -151,8 +151,16 @@ def run_setup(out, tty_in):
 
     body = f"ANTHROPIC_BASE_URL={url}\nANTHROPIC_AUTH_TOKEN={token}\n"
     if auto_model:
-        body += f"ANTHROPIC_DEFAULT_SONNET_MODEL={auto_model}\n"
-        body += f"ANTHROPIC_DEFAULT_OPUS_MODEL={auto_model}\n"
+        # Decoded, not as advertised. These two are the only ids claude
+        # prints without decoding them first, so a cloaked value reads in
+        # /model as its raw encoding while every neighbouring row shows a
+        # name. Nothing is given up by decoding: a gateway using this cloak
+        # is CLIProxyAPI, which serves the upstream name too — it advertises
+        # only claude-fable-5-dd-hsalf-4v-keespeed and still answers 200 for
+        # deepseek-v4-flash. Uncloaked ids pass through untouched.
+        alias = _display_model_id(auto_model)
+        body += f"ANTHROPIC_DEFAULT_SONNET_MODEL={alias}\n"
+        body += f"ANTHROPIC_DEFAULT_OPUS_MODEL={alias}\n"
     else:
         # Records that auto mode was considered, which absence of the aliases
         # above cannot: they are equally absent for a gateway serving canonical

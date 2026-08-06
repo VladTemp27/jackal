@@ -174,6 +174,25 @@ def has_claude_classifier_models(models):
     )
 
 
+def stale_pins(models, pins):
+    """The pins the gateway no longer serves, compared after decoding.
+
+    Decoded on both sides rather than matched literally, because an
+    advertised id and a stored one are routinely the same model wearing
+    different clothes. A CLIProxyAPI gateway advertises only
+    claude-fable-5-dd-hsalf-4v-keespeed yet answers to deepseek-v4-flash as
+    well, and the decoded form is deliberately what setup stores in the
+    classifier aliases — so a literal comparison would report the value
+    jackal itself just wrote as missing, every single day.
+
+    A pin absent here is a strong signal but not proof: choose_model accepts
+    an id typed by hand precisely because a catalogue can be a subset of
+    what a gateway serves. The caller warns rather than refuses.
+    """
+    advertised = {_display_model_id(m["id"]) for m in models}
+    return [p for p in pins if p and _display_model_id(p) not in advertised]
+
+
 def native_claude_model(models):
     """The first canonical claude id the gateway advertises, or None.
 
