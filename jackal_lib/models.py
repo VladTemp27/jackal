@@ -6,6 +6,7 @@ gated by usable_model and display text has its control characters dropped.
 """
 
 import json
+import os
 import time
 import urllib.error
 import urllib.parse
@@ -37,6 +38,33 @@ def _display_model_id(mid):
         if encoded:
             return encoded[::-1]
     return mid
+
+
+def _cloak_model_id(mid):
+    """mid disguised as a claude id, or mid unchanged when it already is one.
+
+    Claude Code only offers claude-* ids in its own picker, so a gateway
+    advertising a foreign id — gpt-5.6-sol — leaves that model unreachable
+    from the UI even though the gateway will serve it. CLIProxyAPI solves
+    this by advertising an already-cloaked id; gateways that don't get the
+    same treatment here, using the identical encoding so _display_model_id
+    decodes either one back to the original name.
+
+    The claude- test covers both cases that must be left alone, and it is one
+    test rather than two on purpose: a native claude id, which
+    has_claude_classifier_models still has to recognise by its raw prefix,
+    and an id the gateway already cloaked — whose prefix starts with claude-
+    too, so re-cloaking it is impossible by construction rather than by a
+    second guard someone could forget.
+
+    Routing follows the advertised string verbatim: jackal execv's claude and
+    is gone before the first request, so a cloaked id only reaches the right
+    model if the gateway decodes the prefix itself. JACKAL_NO_CLOAK=1 backs
+    the whole feature out for a gateway that doesn't.
+    """
+    if os.environ.get("JACKAL_NO_CLOAK") or mid.startswith("claude-"):
+        return mid
+    return _CLAUDE_MODEL_CLOAK + mid[::-1]
 
 
 def _printable(s):
@@ -118,7 +146,13 @@ def fetch_models(url, token, timeout=MODELS_TIMEOUT):
                 return models, f"response larger than {MODELS_MAX_BYTES} bytes"
             page = json.loads(raw)
             for m in page["data"]:
-                mid = m["id"]
+                raw = m["id"]
+                # Cloak before the gate rather than after it. The prefix adds
+                # 18 characters, so an id sitting just inside MODELS_MAX_ID
+                # would otherwise pass here and be stored in a form
+                # usable_model would have refused — and the gate is also what
+                # keeps a reversed id carrying '=' or a newline out.
+                mid = _cloak_model_id(raw)
                 # Drop what could never be stored instead of advertising it:
                 # otherwise the picker offers a row that is refused after the
                 # user picks it, and an id carrying an ANSI escape would reach
@@ -133,8 +167,10 @@ def fetch_models(url, token, timeout=MODELS_TIMEOUT):
                         # Same reasoning for the sibling field, which has no
                         # equivalent gate: drop control characters so a name
                         # can't redraw the list, and truncate so one verbose
-                        # name can't wreck the layout.
-                        "display_name": _printable(m.get("display_name") or mid)[:60],
+                        # name can't wreck the layout. Falls back to the
+                        # advertised id, not the cloaked one, so a gateway
+                        # omitting display_name still reads as itself.
+                        "display_name": _printable(m.get("display_name") or raw)[:60],
                     }
                 )
             after = page.get("last_id")

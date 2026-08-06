@@ -93,6 +93,18 @@ HOSTILE = {
     "last_id": None,
 }
 
+
+# jackal cloaks any advertised id that is not already claude-shaped, so a
+# foreign model still reaches Claude Code's picker. Mirrored here as a literal
+# for the same reason as BACKUP_SUFFIX: the suite runs jackal as a subprocess,
+# so there is nothing to import. The encoding itself stays pinned by
+# test_setup_displays_uncloaked_model_id_but_stores_gateway_id, which spells the
+# cloaked string out in full — this helper only keeps the other sites readable,
+# and would be worthless as the sole check of the scheme.
+def cloaked(mid):
+    return "claude-fable-5-dd-" + mid[::-1]
+
+
 if POSIX:
     import pty
 
@@ -487,6 +499,7 @@ class JackalTest(unittest.TestCase):
         update_check=False,
         update_url=None,
         system_path=None,
+        extra_env=None,
     ):
         """Drive jackal through a real terminal, answering each prompt.
 
@@ -505,6 +518,7 @@ class JackalTest(unittest.TestCase):
                     update_check=update_check,
                     update_url=update_url,
                     system_path=system_path,
+                    extra_env=extra_env,
                 ),
             )
             os._exit(127)  # unreachable unless execve fails
@@ -835,7 +849,7 @@ class JackalTest(unittest.TestCase):
         out, code = self.run_pty(inputs=["testgw", url, "tok_abc123", "2"], args=[])
         self.assertEqual(code, 0)
         settings = self.gateway_settings("testgw")
-        self.assertEqual(json.loads(settings.read_text())["model"], "gw-two")
+        self.assertEqual(json.loads(settings.read_text())["model"], cloaked("gw-two"))
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
         self.assertIn("Gateway Two", out, "picker must render display_name")
         self.assertIn("gw-two", out, "ordinary model IDs must remain visible")
@@ -922,6 +936,86 @@ class JackalTest(unittest.TestCase):
         self.assertNotIn("gpt-5.6-sol", self.gateway_body())
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_uncloaked_gateway_id_is_cloaked_for_routing(self):
+        """A gateway that doesn't cloak gets the same treatment client-side.
+
+        The mirror image of the test above: there the gateway advertised the
+        cloaked id, here it advertises the bare one. Either way the user reads
+        gpt-5.6-sol and Claude Code is handed a claude-shaped id, which is the
+        only form its picker will offer.
+        """
+        pages = {
+            None: {
+                "data": [{"id": "gpt-5.6-sol", "display_name": "GPT 5.6 Sol"}],
+                "has_more": False,
+                "last_id": None,
+            }
+        }
+        url, _ = self.models_server(pages=pages)
+        # No canonical classifier route in a one-model catalogue, so the
+        # auto-mode question follows the launch pick; skipped as irrelevant.
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "1", "skip"], args=[])
+        self.assertEqual(code, 0)
+
+        setup_output = out.split("CLAUDE")[0]
+        self.assertIn("gpt-5.6-sol", setup_output, "picker must show the real id")
+        self.assertNotIn(
+            cloaked("gpt-5.6-sol"), setup_output, "cloak is routing, not UI text"
+        )
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            cloaked("gpt-5.6-sol"),
+        )
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_native_claude_ids_are_never_cloaked(self):
+        """Cloaking a canonical id would break the classifier check downstream.
+
+        has_claude_classifier_models reads raw advertised ids, so wrapping
+        claude-sonnet-5 would hide the route it looks for and drag every such
+        gateway into the auto-mode prompt it is meant to skip.
+        """
+        pages = {
+            None: {
+                "data": [
+                    {"id": "claude-sonnet-5", "display_name": "Claude Sonnet 5"},
+                    {"id": "claude-opus-5", "display_name": "Claude Opus 5"},
+                ],
+                "has_more": False,
+                "last_id": None,
+            }
+        }
+        url, _ = self.models_server(pages=pages)
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "1"], args=[])
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            "claude-sonnet-5",
+        )
+        # Both canonical families are still visible as themselves, so setup
+        # never asks the auto-mode question.
+        self.assertNotIn("Auto-mode model", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_no_cloak_env_stores_the_advertised_id(self):
+        """The escape hatch for a gateway that will not decode the prefix.
+
+        jackal execv's claude and is gone before the first request, so a
+        cloaked id only routes if the gateway itself decodes it. This backs
+        the whole feature out without a downgrade.
+        """
+        url, _ = self.models_server()
+        _, code = self.run_pty(
+            inputs=["testgw", url, "tok_a", "2"],
+            args=[],
+            extra_env={"JACKAL_NO_CLOAK": "1"},
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-two"
+        )
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_picker_accepts_raw_model_id(self):
         """An advertised list can be a subset — an unlisted id must still work."""
         url, _ = self.models_server()
@@ -955,7 +1049,8 @@ class JackalTest(unittest.TestCase):
         url, seen = self.models_server()
         self.run_pty(inputs=["testgw", url, "tok_a", "3"], args=[])
         self.assertEqual(
-            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-three"
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            cloaked("gw-three"),
         )
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
         self.assertEqual(len(seen), 2, "should stop after has_more goes false")
@@ -1182,7 +1277,8 @@ class JackalTest(unittest.TestCase):
         self.assertEqual(code, 0)
         # The surrogate entry is gone, so entry 1 is the healthy one.
         self.assertEqual(
-            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-one"
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            cloaked("gw-one"),
         )
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
 
@@ -1269,7 +1365,8 @@ class JackalTest(unittest.TestCase):
         url, _ = self.models_server(pages=pages)
         out, _ = self.run_pty(inputs=["testgw", url, "tok_a", "1", ""], args=[])
         self.assertEqual(
-            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-one"
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            cloaked("gw-one"),
         )
         self.assertNotIn("ANTHROPIC_MODEL", self.gateway_body())
         # The ESC byte and the \r are gone, so what is left renders as inert
@@ -1297,10 +1394,11 @@ class JackalTest(unittest.TestCase):
         self.assertEqual(code, 0)
         body = self.gateway_body()
         self.assertEqual(
-            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-two"
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            cloaked("gw-two"),
         )
-        self.assertIn("ANTHROPIC_DEFAULT_SONNET_MODEL=gw-two\n", body)
-        self.assertIn("ANTHROPIC_DEFAULT_OPUS_MODEL=gw-two\n", body)
+        self.assertIn(f"ANTHROPIC_DEFAULT_SONNET_MODEL={cloaked('gw-two')}\n", body)
+        self.assertIn(f"ANTHROPIC_DEFAULT_OPUS_MODEL={cloaked('gw-two')}\n", body)
         self.assertIn("Auto-mode model", out)
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
@@ -1310,10 +1408,11 @@ class JackalTest(unittest.TestCase):
         self.run_pty(inputs=["testgw", url, "tok_a", "1", "2"], args=[])
         body = self.gateway_body()
         self.assertEqual(
-            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-one"
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            cloaked("gw-one"),
         )
-        self.assertIn("ANTHROPIC_DEFAULT_SONNET_MODEL=gw-two\n", body)
-        self.assertIn("ANTHROPIC_DEFAULT_OPUS_MODEL=gw-two\n", body)
+        self.assertIn(f"ANTHROPIC_DEFAULT_SONNET_MODEL={cloaked('gw-two')}\n", body)
+        self.assertIn(f"ANTHROPIC_DEFAULT_OPUS_MODEL={cloaked('gw-two')}\n", body)
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_sonnet_only_still_prompts_for_auto_mode_model(self):
@@ -1352,7 +1451,8 @@ class JackalTest(unittest.TestCase):
         self.assertIn("auto mode may be unavailable", out)
         body = self.gateway_body()
         self.assertEqual(
-            json.loads(self.gateway_settings("testgw").read_text())["model"], "gw-one"
+            json.loads(self.gateway_settings("testgw").read_text())["model"],
+            cloaked("gw-one"),
         )
         self.assertNotIn("ANTHROPIC_DEFAULT_SONNET_MODEL", body)
         self.assertNotIn("ANTHROPIC_DEFAULT_OPUS_MODEL", body)
@@ -1525,9 +1625,10 @@ class JackalTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertTrue(seen)
         self.assertEqual(
-            json.loads(self.gateway_settings("work").read_text())["model"], "gw-two"
+            json.loads(self.gateway_settings("work").read_text())["model"],
+            cloaked("gw-two"),
         )
-        self.assertIn("persistent=[gw-two]", out)
+        self.assertIn(f"persistent=[{cloaked('gw-two')}]", out)
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_unpinned_gateway_accepts_raw_model_when_catalogue_fails(self):
