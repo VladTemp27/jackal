@@ -160,8 +160,20 @@ def fetch_models(url, token, timeout=MODELS_TIMEOUT):
     return models, None
 
 
-def has_claude_classifier_models(models):
-    """True when Claude Code's native Sonnet and Opus classifier routes exist.
+# The families Claude Code's auto mode routes between. Each is overridden by
+# its own ANTHROPIC_DEFAULT_<family>_MODEL, so they are aliased independently.
+CLASSIFIER_FAMILIES = ("SONNET", "OPUS")
+
+
+def missing_classifier_routes(models):
+    """The classifier families this gateway advertises no canonical id for.
+
+    Empty when auto mode already works untouched. Reported per family rather
+    than as a single bool because a gateway serving one of the two needs only
+    the other aliased: overriding a family it does serve would swap a working
+    model for a stand-in picked to cover the missing one, and Claude Code
+    renders every alias as its own picker entry, so the redundant override
+    also lists the same model twice.
 
     Deliberately checks the raw advertised ids, not the uncloaked display
     ones: claude's classifier side queries ask for the literal canonical id,
@@ -169,8 +181,10 @@ def has_claude_classifier_models(models):
     A cloaked id that merely decodes to a claude name is routed as the cloaked
     id, which is exactly the case that still needs an auto-mode model.
     """
-    return any(m["id"].startswith("claude-sonnet-") for m in models) and any(
-        m["id"].startswith("claude-opus-") for m in models
+    return tuple(
+        family
+        for family in CLASSIFIER_FAMILIES
+        if not any(m["id"].startswith(f"claude-{family.lower()}-") for m in models)
     )
 
 

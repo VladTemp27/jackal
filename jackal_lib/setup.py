@@ -21,7 +21,7 @@ from .models import (
     _display_model_id,
     choose_model,
     fetch_models,
-    has_claude_classifier_models,
+    missing_classifier_routes,
     usable_model,
 )
 from .terminal import colors
@@ -117,9 +117,11 @@ def run_setup(out, tty_in):
 
     # Only asked when claude's own classifier routes are missing: with both
     # canonical families present, auto mode already works and pinning aliases
-    # would override a working default for no reason.
+    # would override a working default for no reason. The same reasoning
+    # applies per family, so only the missing ones are aliased below.
+    missing_routes = missing_classifier_routes(models)
     auto_model = None
-    if not has_claude_classifier_models(models):
+    if missing_routes:
         auto_model = choose_model(
             models,
             w,
@@ -143,8 +145,8 @@ def run_setup(out, tty_in):
 
     body = f"ANTHROPIC_BASE_URL={url}\nANTHROPIC_AUTH_TOKEN={token}\n"
     if auto_model:
-        body += f"ANTHROPIC_DEFAULT_SONNET_MODEL={auto_model}\n"
-        body += f"ANTHROPIC_DEFAULT_OPUS_MODEL={auto_model}\n"
+        for family in missing_routes:
+            body += f"ANTHROPIC_DEFAULT_{family}_MODEL={auto_model}\n"
     else:
         # Records that auto mode was considered, which absence of the aliases
         # above cannot: they are equally absent for a gateway serving canonical

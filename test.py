@@ -1316,24 +1316,31 @@ class JackalTest(unittest.TestCase):
         self.assertIn("ANTHROPIC_DEFAULT_OPUS_MODEL=gw-two\n", body)
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
-    def test_sonnet_only_still_prompts_for_auto_mode_model(self):
+    def test_sonnet_only_aliases_the_missing_opus_route_alone(self):
+        """A present canonical route keeps serving itself.
+
+        Overriding claude-sonnet-5 here would swap a model the gateway
+        actually serves for one chosen only to stand in for the missing opus
+        route, and Claude Code's picker renders each alias as its own entry —
+        so aliasing both slots also shows the same model twice.
+        """
         url, _ = self.models_server(pages={None: SONNET_ONLY})
         out, code = self.run_pty(inputs=["testgw", url, "tok_a", "1", ""], args=[])
         self.assertEqual(code, 0)
         self.assertIn("Auto-mode model", out)
         body = self.gateway_body()
-        self.assertIn("ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-5\n", body)
+        self.assertNotIn("ANTHROPIC_DEFAULT_SONNET_MODEL", body)
         self.assertIn("ANTHROPIC_DEFAULT_OPUS_MODEL=claude-sonnet-5\n", body)
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
-    def test_opus_only_still_prompts_for_auto_mode_model(self):
+    def test_opus_only_aliases_the_missing_sonnet_route_alone(self):
         url, _ = self.models_server(pages={None: OPUS_ONLY})
         out, code = self.run_pty(inputs=["testgw", url, "tok_a", "1", ""], args=[])
         self.assertEqual(code, 0)
         self.assertIn("Auto-mode model", out)
         body = self.gateway_body()
+        self.assertNotIn("ANTHROPIC_DEFAULT_OPUS_MODEL", body)
         self.assertIn("ANTHROPIC_DEFAULT_SONNET_MODEL=claude-opus-5\n", body)
-        self.assertIn("ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-5\n", body)
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_auto_mode_accepts_raw_model_id(self):
