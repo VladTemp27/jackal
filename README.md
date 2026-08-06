@@ -266,6 +266,11 @@ at most, it asks `registry.npmjs.org` for the latest published `jackal-cli`
 version. No gateway URL, token, or usage data is ever sent — just that one GET
 request. Set `JACKAL_NO_UPDATE_CHECK=1` to turn it off completely.
 
+The only other request at launch goes to **your own gateway**, never to us:
+once a day per gateway, `jackal` re-reads its `/v1/models` so it can warn you
+when a model you pinned is no longer served. Set `JACKAL_NO_MODEL_CHECK=1` to
+turn that off. Both are skipped entirely when stdout isn't a terminal.
+
 ### If the gateway adds models later, does `/model` show them?
 
 Yes — `jackal` has nothing to serve you a stale list from. See

@@ -189,6 +189,7 @@ class JackalTest(unittest.TestCase):
         update_url=None,
         system_path=None,
         extra_env=None,
+        model_check=False,
     ):
         if system_path is None:
             dirs = self._system_path()
@@ -209,6 +210,11 @@ class JackalTest(unittest.TestCase):
             # Tests that don't care about the update-check feature must never
             # reach the real npm registry.
             e["JACKAL_NO_UPDATE_CHECK"] = "1"
+        if not model_check:
+            # Same rule for the staleness check: every launch would otherwise
+            # fetch a catalogue, which is both slow and a behaviour no test
+            # outside the ones below is asserting.
+            e["JACKAL_NO_MODEL_CHECK"] = "1"
         if update_url:
             e["JACKAL_UPDATE_URL"] = update_url
         if os.name == "nt":
@@ -487,6 +493,8 @@ class JackalTest(unittest.TestCase):
         update_check=False,
         update_url=None,
         system_path=None,
+        extra_env=None,
+        model_check=False,
     ):
         """Drive jackal through a real terminal, answering each prompt.
 
@@ -505,6 +513,8 @@ class JackalTest(unittest.TestCase):
                     update_check=update_check,
                     update_url=update_url,
                     system_path=system_path,
+                    extra_env=extra_env,
+                    model_check=model_check,
                 ),
             )
             os._exit(127)  # unreachable unless execve fails
@@ -1316,6 +1326,50 @@ class JackalTest(unittest.TestCase):
         self.assertIn("ANTHROPIC_DEFAULT_OPUS_MODEL=gw-two\n", body)
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_auto_mode_default_prefers_a_canonical_id_over_a_cloaked_one(self):
+        """The aliases are the one place claude prints an id undecoded.
+
+        Mirrors a real CLIProxyAPI catalogue: a cloaked model plus a
+        canonical sonnet, and no opus, so the auto-mode question is asked.
+        Defaulting to the cloaked launch model would put its raw encoded
+        form in ANTHROPIC_DEFAULT_*_MODEL, where /model renders it verbatim
+        as claude-fable-5-dd-hsalf-4v-keespeed instead of a name.
+        """
+        cloaked = "claude-fable-5-dd-hsalf-4v-keespeed"
+        pages = {
+            None: {
+                "data": [
+                    {"id": cloaked, "display_name": "DeepSeek V4 Flash"},
+                    {"id": "claude-sonnet-5", "display_name": "Claude Sonnet 5"},
+                ],
+                "has_more": False,
+                "last_id": None,
+            }
+        }
+        url, _ = self.models_server(pages=pages)
+        # Pick the cloaked model to launch on, then take the offered default
+        # for auto mode rather than naming one.
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "1", ""], args=[])
+        self.assertEqual(code, 0)
+
+        # The launch pin is untouched: it still routes through the cloak, and
+        # claude decodes that one for display anyway.
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"], cloaked
+        )
+        body = self.gateway_body()
+        self.assertIn("ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-5\n", body)
+        self.assertIn("ANTHROPIC_DEFAULT_OPUS_MODEL=claude-sonnet-5\n", body)
+        # The regression this exists for: a cloaked id must not reach the
+        # aliases, because that is what shows up jumbled in the picker.
+        self.assertNotIn(cloaked, body)
+        self.assertIn(
+            "blank for claude-sonnet-5",
+            out.split("CLAUDE")[0],
+            "hint must show default",
+        )
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_sonnet_only_still_prompts_for_auto_mode_model(self):
         url, _ = self.models_server(pages={None: SONNET_ONLY})
         out, code = self.run_pty(inputs=["testgw", url, "tok_a", "1", ""], args=[])
@@ -1440,6 +1494,68 @@ class JackalTest(unittest.TestCase):
         out, _ = self.run_pty(args=["-p", "hi"])
         self.assertNotIn("auto mode may be unavailable", out)
 
+    def _seed_with_aliases(self, url, alias, model="gw-one"):
+        """A launch-ready gateway pinning model, with both aliases set."""
+        path = self.seed_named("work", url, "tok_w", model=model)
+        path.write_text(
+            path.read_text()
+            + f"ANTHROPIC_DEFAULT_SONNET_MODEL={alias}\n"
+            + f"ANTHROPIC_DEFAULT_OPUS_MODEL={alias}\n"
+        )
+        self.set_current("work")
+        return path
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_launch_warns_when_a_pinned_model_is_no_longer_served(self):
+        """A gateway configured against a family later switched off.
+
+        The alias was valid when setup ran; the catalogue no longer lists it.
+        Without this the first sign is a 403 from auto mode naming a model
+        the user never chose, with nothing pointing at jackal.
+        """
+        url, _ = self.models_server(pages={None: NON_CLAUDE})
+        self._seed_with_aliases(url, "claude-sonnet-5")
+        out, code = self.run_pty(inputs=[], args=["-p", "hi"], model_check=True)
+        self.assertEqual(code, 0)
+        self.assertIn("no longer serves claude-sonnet-5", out)
+        # Named once, not once per alias — both aliases hold the same id.
+        # Targets the joined form rather than counting across the whole
+        # output, which also carries the stub's own sonnet=[…] opus=[…] echo.
+        self.assertNotIn("claude-sonnet-5, claude-sonnet-5", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_launch_is_quiet_when_every_pin_is_still_served(self):
+        url, _ = self.models_server(pages={None: NON_CLAUDE})
+        self._seed_with_aliases(url, "gw-two")
+        out, code = self.run_pty(inputs=[], args=["-p", "hi"], model_check=True)
+        self.assertEqual(code, 0)
+        self.assertNotIn("no longer serves", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_stale_check_matches_a_cloaked_id_by_its_decoded_form(self):
+        """The regression that would make this warning useless.
+
+        A CLIProxyAPI gateway advertises only the cloaked id, while setup
+        deliberately stores the decoded name in the aliases because that is
+        what /model renders readably. Comparing the two literally would
+        report the value jackal itself just wrote as missing, on every
+        gateway, once a day, forever.
+        """
+        cloaked = "claude-fable-5-dd-hsalf-4v-keespeed"
+        pages = {
+            None: {
+                "data": [{"id": cloaked, "display_name": "DeepSeek V4 Flash"}],
+                "has_more": False,
+                "last_id": None,
+            }
+        }
+        url, _ = self.models_server(pages=pages)
+        self._seed_with_aliases(url, "deepseek-v4-flash", model=cloaked)
+        out, code = self.run_pty(inputs=[], args=["-p", "hi"], model_check=True)
+        self.assertEqual(code, 0)
+        self.assertNotIn("no longer serves", out)
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_classifier_warning_suppressed_when_piped(self):
         """Same rule as the banner: keeps `jackal -p ... > file` clean."""
         self.seed_named("work", "https://work.test", "tok_w")

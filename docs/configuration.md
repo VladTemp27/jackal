@@ -7,6 +7,7 @@ How `jackal` stores gateways, picks a launch model, and what it prints.
 - [Editing an existing gateway](#editing-an-existing-gateway)
 - [The banner](#the-banner)
 - [Update checks](#update-checks)
+- [Stale model checks](#stale-model-checks)
 
 ## Where gateways live
 
@@ -130,6 +131,32 @@ one, and every other setting in it — permissions, hooks, plugins, and the
 rest — is read fresh into the gateway file on every launch, never written
 back.
 
+### Cloaked model ids
+
+A gateway fronting other providers may advertise its models under
+Claude-shaped ids. CLIProxyAPI does this by publishing a model as
+`claude-fable-5-dd-` followed by its real id reversed, so `deepseek-v4-flash`
+is advertised as `claude-fable-5-dd-hsalf-4v-keespeed`.
+
+`jackal` decodes that for display. The picker shows the real name, while the
+id the gateway advertised is what gets stored and routed:
+
+```
+  ▸ Launch model   2 from gateway
+     1  DeepSeek V4 Flash   deepseek-v4-flash
+     2  DeepSeek V4 Pro     deepseek-v4-pro
+    number or model id (required)
+    ›
+```
+
+Typing the decoded name selects that entry, so what you can read is what you
+can type. Ids that aren't cloaked are shown and stored exactly as advertised.
+
+Such a gateway serves **both** forms: it advertises only the cloaked id and
+still answers to the real one. That is what makes the alias handling below
+safe, and why the [staleness check](#stale-model-checks) has to compare
+decoded ids rather than literal ones.
+
 ### Auto-mode model
 
 Claude Code's auto mode routes safety classification through its own
@@ -147,11 +174,24 @@ either family is missing, `--setup` asks for an Auto-mode model:
     ›
 ```
 
-Enter reuses the launch model you just picked. Typing `skip` leaves both
-aliases unset and warns that auto mode may be unavailable on this gateway.
-Whatever is chosen is written to both
-`ANTHROPIC_DEFAULT_SONNET_MODEL` and `ANTHROPIC_DEFAULT_OPUS_MODEL`, so the
-same gateway model backs Claude Code's Opus fallback route too.
+Enter takes the offered default. That default is a canonical `claude-*` id
+from the gateway's own catalogue when there is one — reaching this prompt
+means one of the two families is missing, not necessarily both — and the
+launch model otherwise. Typing `skip` leaves both aliases unset and warns that
+auto mode may be unavailable on this gateway.
+
+Whatever is chosen is written to both `ANTHROPIC_DEFAULT_SONNET_MODEL` and
+`ANTHROPIC_DEFAULT_OPUS_MODEL`, so the same gateway model backs Claude Code's
+Opus fallback route too. A [cloaked](#cloaked-model-ids) id is written
+**decoded**. These two aliases are the only model ids Claude Code prints
+without decoding them first, so a cloaked value shows up in `/model` as its
+raw encoding — `claude-fable-5-dd-hsalf-4v-keespeed` — sitting beside rows
+that all read as names. Storing the decoded form costs nothing, because a
+gateway using this cloak answers to the real id too.
+
+Preferring a canonical id also makes the alias likelier to outlive a
+reconfigure — and likelier to be switched off by whoever runs the gateway,
+which is what the [staleness check](#stale-model-checks) exists to catch.
 
 Running `--setup`/`--reconfigure` against an existing gateway replaces its
 saved aliases rather than preserving them: skipping the Auto-mode prompt on a
@@ -177,7 +217,10 @@ serving canonical Claude ids natively, or where you deliberately chose `skip`.
 Yes. `jackal` has nothing to serve you a stale list from. The catalogue fetched
 during `--setup` is used once, to draw the picker, and is then discarded — it is
 never written to disk. A gateway's isolated `settings.json` holds a single
-model, not a list, and `jackal` makes no network request at launch at all.
+model, not a list. The one catalogue request made at launch is the
+[staleness check](#stale-model-checks), which reads the gateway's list to
+print at most one warning line — it never stores that list, and never changes
+what `/model` offers.
 
 The one thing that does persist is your pinned launch model. A model added to
 the gateway later will appear in `/model` but will not become your launch
@@ -239,3 +282,40 @@ whenever stdout isn't a tty, so piped, scripted, and CI use are unaffected. Set
 This exists because npm does **not** notify you about outdated global packages.
 It notifies about new versions of npm itself, which is why people assume
 otherwise; `npm outdated -g` reports package updates only when you run it.
+
+## Stale model checks
+
+A gateway keeps pinning whatever was available when you configured it. Switch
+a model family off months later and the pin stays behind — the usual symptom
+is auto mode failing with a `403 model not allowed for this developer` naming
+`claude-sonnet-5`, a model you never chose, from a `--setup` that picked it
+perfectly legitimately at the time.
+
+On an interactive launch, `jackal` re-reads that gateway's `/v1/models` at
+most once every 24 hours per gateway (cached in `~/.jackal/model-check.json`)
+and warns when the launch model or either auto-mode alias is no longer served:
+
+```text
+  ·  gateway no longer serves claude-sonnet-5
+     re-run `jackal --setup` for this gateway to fix
+```
+
+Re-running `--setup` for that gateway clears it. Both aliases usually hold the
+same id, and it is named once rather than twice.
+
+Ids are compared **after decoding both sides**, so an alias stored as
+`deepseek-v4-flash` still matches a gateway advertising only
+`claude-fable-5-dd-hsalf-4v-keespeed`. Comparing them literally would report
+the value `--setup` itself just wrote as missing, on every such gateway, once
+a day.
+
+Silence is the default. A catalogue that can't be fetched proves nothing about
+the pins, so an unreachable, slow, or erroring gateway produces no warning
+rather than a false alarm, and the fetch carries a 2 second timeout so it
+can't hold up a launch. Like the banner and the update check, the whole thing
+is skipped when stdout isn't a tty. Set `JACKAL_NO_MODEL_CHECK=1` to disable
+it outright.
+
+An id missing from the catalogue is a strong signal, not proof — `--setup`
+deliberately lets you type an id the gateway never listed, and that stays
+valid. The check warns; it never refuses to launch.

@@ -22,6 +22,7 @@ from .models import (
     choose_model,
     fetch_models,
     has_claude_classifier_models,
+    native_claude_model,
     usable_model,
 )
 from .terminal import colors
@@ -126,7 +127,14 @@ def run_setup(out, tty_in):
             tty_in,
             c,
             title="Auto-mode model",
-            default=model,
+            # A canonical id the gateway advertises, in preference to the
+            # launch model. Reaching here means the catalogue is missing one
+            # of the two canonical families, but it may well have the other,
+            # and these aliases are the one place Claude Code shows a model
+            # id without decoding it first. Falls back to the launch model
+            # when the gateway advertises no canonical id at all, which is
+            # the only thing there was to offer before.
+            default=native_claude_model(models) or model,
             allow_skip=True,
         )
         if auto_model and not usable_model(auto_model):
@@ -143,8 +151,16 @@ def run_setup(out, tty_in):
 
     body = f"ANTHROPIC_BASE_URL={url}\nANTHROPIC_AUTH_TOKEN={token}\n"
     if auto_model:
-        body += f"ANTHROPIC_DEFAULT_SONNET_MODEL={auto_model}\n"
-        body += f"ANTHROPIC_DEFAULT_OPUS_MODEL={auto_model}\n"
+        # Decoded, not as advertised. These two are the only ids claude
+        # prints without decoding them first, so a cloaked value reads in
+        # /model as its raw encoding while every neighbouring row shows a
+        # name. Nothing is given up by decoding: a gateway using this cloak
+        # is CLIProxyAPI, which serves the upstream name too — it advertises
+        # only claude-fable-5-dd-hsalf-4v-keespeed and still answers 200 for
+        # deepseek-v4-flash. Uncloaked ids pass through untouched.
+        alias = _display_model_id(auto_model)
+        body += f"ANTHROPIC_DEFAULT_SONNET_MODEL={alias}\n"
+        body += f"ANTHROPIC_DEFAULT_OPUS_MODEL={alias}\n"
     else:
         # Records that auto mode was considered, which absence of the aliases
         # above cannot: they are equally absent for a gateway serving canonical

@@ -5,10 +5,12 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from .gateways import (
     CLASSIFIER_CHECKED,
+    JACKAL_DIR,
     config_value,
     gateway_claude_dir,
     gateway_path,
@@ -20,12 +22,20 @@ from .gateways import (
     rewrite_gateway_settings,
     write_gateway_model,
 )
-from .models import usable_model
+from .models import fetch_models, stale_pins, usable_model
 from .setup import select_model
 from .terminal import colors, open_tty
 from .updates import maybe_check_for_update
 
 CLAUDE_HINT = "install it with: npm i -g @anthropic-ai/claude-code"
+
+MODEL_CHECK_CACHE = JACKAL_DIR / "model-check.json"
+MODEL_CHECK_DISABLED = "JACKAL_NO_MODEL_CHECK"
+MODEL_CHECK_INTERVAL = 24 * 60 * 60
+# Far below MODELS_TIMEOUT: setup can afford to wait on a catalogue because
+# the user is answering questions anyway, but this runs in front of every
+# launch, where seconds of nothing would be worse than the warning is worth.
+MODEL_CHECK_TIMEOUT = 2
 
 
 def find_claude():
@@ -96,8 +106,10 @@ def warn_if_classifier_unconfigured():
     call — with an error naming a model the user never chose and no mention of
     jackal. Cheap to say so here; diagnosing it from that message is not.
 
-    Deliberately not a fetch: launch stays offline, so this can only report
-    what the file records, never re-check the catalogue.
+    Deliberately not a fetch: this reports what the file records and never
+    re-checks the catalogue, so it is exact and costs nothing. Whether what
+    the file records still exists is maybe_warn_stale_models' problem, and
+    that one is cached and best-effort precisely because this one is neither.
     """
     if not sys.stdout.isatty():
         return  # same rule as the banner: never corrupt piped output
@@ -113,6 +125,68 @@ def warn_if_classifier_unconfigured():
         f" unavailable{c['Z']}\n"
         f"  {c['D']}   re-run `jackal --setup` for this gateway to fix{c['Z']}\n"
     )
+
+
+def maybe_warn_stale_models(name, model):
+    """One line when the gateway stopped serving something this gateway pins.
+
+    The other half of warn_if_classifier_unconfigured, which deliberately
+    stays offline and so can only report what the file records. This reports
+    whether what the file records still exists: a gateway configured while
+    the claude family was enabled keeps ANTHROPIC_DEFAULT_SONNET_MODEL=
+    claude-sonnet-5 long after that family is switched off, and auto mode
+    then fails with a 403 naming a model the user never chose.
+
+    Shaped like maybe_check_for_update deliberately — terminal-only, cached
+    for a day per gateway, and total in its error handling — so a slow,
+    hostile, or unreachable gateway can never delay or break a launch.
+    Silence is the default: a catalogue that could not be fetched proves
+    nothing about the pins, so it says nothing rather than crying wolf.
+    """
+    if os.environ.get(MODEL_CHECK_DISABLED):
+        return
+    if not sys.stdout.isatty():
+        return  # same rule as the banner: never corrupt piped output
+    url = os.environ.get("ANTHROPIC_BASE_URL")
+    token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
+    if not url or not token:
+        return
+    try:
+        try:
+            cache = json.loads(MODEL_CHECK_CACHE.read_text())
+        except (OSError, ValueError):
+            cache = {}
+        now = int(time.time())
+        if now - cache.get(name, 0) <= MODEL_CHECK_INTERVAL:
+            return
+        models, err = fetch_models(url, token, timeout=MODEL_CHECK_TIMEOUT)
+        if err or not models:
+            return
+        # Stamped before the warning prints, so a gateway left unfixed nags
+        # once a day rather than on every single launch.
+        cache[name] = now
+        JACKAL_DIR.mkdir(mode=0o700, exist_ok=True)
+        MODEL_CHECK_CACHE.write_text(json.dumps(cache))
+        stale = stale_pins(
+            models,
+            [
+                model,
+                os.environ.get("ANTHROPIC_DEFAULT_SONNET_MODEL"),
+                os.environ.get("ANTHROPIC_DEFAULT_OPUS_MODEL"),
+            ],
+        )
+        if not stale:
+            return
+        # Deduplicated: the two aliases hold the same id in the common case,
+        # and naming it twice reads like two separate problems.
+        c = colors()
+        print(
+            f"  {c['D']}·  gateway no longer serves"
+            f" {', '.join(sorted(set(stale)))}{c['Z']}\n"
+            f"  {c['D']}   re-run `jackal --setup` for this gateway to fix{c['Z']}\n"
+        )
+    except Exception:  # noqa: BLE001 — advisory only; must never break a launch
+        return
 
 
 def _prompt_missing_model(name):
@@ -199,6 +273,7 @@ def launch(name, args):
     maybe_check_for_update(version())
     banner(name)
     warn_if_classifier_unconfigured()
+    maybe_warn_stale_models(name, model)
 
     claude = find_claude()
     if not os.access(claude, os.X_OK):
