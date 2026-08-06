@@ -22,6 +22,7 @@ from .models import (
     choose_model,
     fetch_models,
     has_claude_classifier_models,
+    native_claude_model,
     usable_model,
 )
 from .terminal import colors
@@ -126,7 +127,14 @@ def run_setup(out, tty_in):
             tty_in,
             c,
             title="Auto-mode model",
-            default=model,
+            # A canonical id the gateway advertises, in preference to the
+            # launch model. Reaching here means the catalogue is missing one
+            # of the two canonical families, but it may well have the other,
+            # and these aliases are the one place Claude Code shows a model
+            # id without decoding it first. Falls back to the launch model
+            # when the gateway advertises no canonical id at all, which is
+            # the only thing there was to offer before.
+            default=native_claude_model(models) or model,
             allow_skip=True,
         )
         if auto_model and not usable_model(auto_model):

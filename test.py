@@ -1316,6 +1316,50 @@ class JackalTest(unittest.TestCase):
         self.assertIn("ANTHROPIC_DEFAULT_OPUS_MODEL=gw-two\n", body)
 
     @unittest.skipUnless(POSIX, "pty is POSIX-only")
+    def test_auto_mode_default_prefers_a_canonical_id_over_a_cloaked_one(self):
+        """The aliases are the one place claude prints an id undecoded.
+
+        Mirrors a real CLIProxyAPI catalogue: a cloaked model plus a
+        canonical sonnet, and no opus, so the auto-mode question is asked.
+        Defaulting to the cloaked launch model would put its raw encoded
+        form in ANTHROPIC_DEFAULT_*_MODEL, where /model renders it verbatim
+        as claude-fable-5-dd-hsalf-4v-keespeed instead of a name.
+        """
+        cloaked = "claude-fable-5-dd-hsalf-4v-keespeed"
+        pages = {
+            None: {
+                "data": [
+                    {"id": cloaked, "display_name": "DeepSeek V4 Flash"},
+                    {"id": "claude-sonnet-5", "display_name": "Claude Sonnet 5"},
+                ],
+                "has_more": False,
+                "last_id": None,
+            }
+        }
+        url, _ = self.models_server(pages=pages)
+        # Pick the cloaked model to launch on, then take the offered default
+        # for auto mode rather than naming one.
+        out, code = self.run_pty(inputs=["testgw", url, "tok_a", "1", ""], args=[])
+        self.assertEqual(code, 0)
+
+        # The launch pin is untouched: it still routes through the cloak, and
+        # claude decodes that one for display anyway.
+        self.assertEqual(
+            json.loads(self.gateway_settings("testgw").read_text())["model"], cloaked
+        )
+        body = self.gateway_body()
+        self.assertIn("ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-5\n", body)
+        self.assertIn("ANTHROPIC_DEFAULT_OPUS_MODEL=claude-sonnet-5\n", body)
+        # The regression this exists for: a cloaked id must not reach the
+        # aliases, because that is what shows up jumbled in the picker.
+        self.assertNotIn(cloaked, body)
+        self.assertIn(
+            "blank for claude-sonnet-5",
+            out.split("CLAUDE")[0],
+            "hint must show default",
+        )
+
+    @unittest.skipUnless(POSIX, "pty is POSIX-only")
     def test_sonnet_only_still_prompts_for_auto_mode_model(self):
         url, _ = self.models_server(pages={None: SONNET_ONLY})
         out, code = self.run_pty(inputs=["testgw", url, "tok_a", "1", ""], args=[])
