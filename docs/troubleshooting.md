@@ -66,6 +66,19 @@ at launch when it detects this — see
 If the aliases *are* set and auto mode still fails, the gateway is genuinely
 failing to serve the model they name; verify it appears in `/model`.
 
+This is the common case on a gateway configured while a Claude family was
+enabled and switched off later — the alias was valid when `--setup` ran. On an
+interactive launch `jackal` says so directly once it can confirm the model is
+gone from the catalogue:
+
+```text
+  ·  gateway no longer serves claude-sonnet-5
+     re-run `jackal --setup` for this gateway to fix
+```
+
+It stays quiet when the gateway can't be reached, since that proves nothing
+either way — see [configuration](configuration.md#stale-model-checks).
+
 ## Error messages
 
 | Message | Cause |
@@ -78,6 +91,7 @@ failing to serve the model they name; verify it appears in `/model`.
 | `model required — nothing saved` | No usable model came out of the picker — a blank line, an out-of-range number, or an id that can't be stored safely. A gateway that can't list `/v1/models` still lets you type an id by hand; nothing is written until one is chosen, and any previous config is left intact. |
 | `no auto-mode model configured — auto mode may be unavailable on this gateway` | The gateway lacked a complete canonical Sonnet/Opus pair and classifier selection was skipped. Reconfigure and select a gateway model for auto mode. |
 | `no auto-mode model configured — auto mode may be unavailable` at launch | The gateway file was saved before the auto-mode prompt existed, so it was never asked. Re-run `jackal --setup` for that gateway; see [configuration](configuration.md#auto-mode-model). |
+| `gateway no longer serves <id>` at launch | The gateway's catalogue no longer lists the launch model or an auto-mode alias this gateway pins — typically a model family disabled after `--setup` ran. Re-run `jackal --setup` for that gateway; see [configuration](configuration.md#stale-model-checks). Set `JACKAL_NO_MODEL_CHECK=1` to stop checking. |
 | `jackal: no gateway named '<name>' — see jackal --list` | `use`, `--gateway`, or `--remove` named a gateway that isn't saved. |
 | `` jackal: multiple gateways saved, no default set — run `jackal use <name>` `` | Bare `jackal` with 2+ saved gateways and no default — run `jackal use <name>` to pick one. |
 | `jackal: invalid Claude settings '<path>': <reason>` | The gateway's own `settings.json` is not valid JSON or not a JSON object. Back up and remove that file (see below), then run the gateway interactively to select a model again. |

@@ -106,8 +106,10 @@ def warn_if_classifier_unconfigured():
     call — with an error naming a model the user never chose and no mention of
     jackal. Cheap to say so here; diagnosing it from that message is not.
 
-    Deliberately not a fetch: launch stays offline, so this can only report
-    what the file records, never re-check the catalogue.
+    Deliberately not a fetch: this reports what the file records and never
+    re-checks the catalogue, so it is exact and costs nothing. Whether what
+    the file records still exists is maybe_warn_stale_models' problem, and
+    that one is cached and best-effort precisely because this one is neither.
     """
     if not sys.stdout.isatty():
         return  # same rule as the banner: never corrupt piped output

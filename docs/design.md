@@ -138,6 +138,23 @@ intact are refused, and control characters are stripped from anything the
 gateway asks to have printed, so a response can't redraw the picker to make one
 entry look like another.
 
+**Cloaked ids are compared decoded, on both sides.** A gateway fronting other
+providers can advertise a model as `claude-fable-5-dd-` plus its real id
+reversed while still answering to the real id, so the catalogue and what
+`jackal` stored can name one model in two forms. The auto-mode aliases are
+deliberately stored *decoded*, because they are the only ids Claude Code
+prints without decoding them first. The launch-time staleness check therefore
+decodes the catalogue and the pins before comparing — a literal comparison
+would report the value `--setup` itself just wrote as missing, on every such
+gateway, once a day, forever.
+
+**The staleness check is modelled on the update check, not on the setup
+fetch.** Terminal-only, cached for a day, with a 2 second timeout and total
+error handling, because it runs in front of every launch rather than between
+two prompts a user is already answering. An unreachable gateway proves nothing
+about a pin, so the check stays silent instead of guessing — it is advisory,
+and never blocks a launch or refuses a model.
+
 ## Distribution
 
 **npm's Windows shim invokes the shebang interpreter by name.** A
